@@ -60,6 +60,17 @@ class ScanApp:
         self._canvas = None
         self._z = None
 
+        # 位置标尺相关
+        self._ruler_x = None
+        self._ruler_y = None
+        self._x_range = None
+        self._y_range = None
+        self._cur_pos = (0.0, 0.0)
+
+        # 手动点动 / 自检
+        self._jog_buttons = []
+        self.btn_selftest = None
+
         self._build_vars()
         self._build_ui()
         self._load_config()
@@ -97,10 +108,15 @@ class ScanApp:
             "home": tk.BooleanVar(value=False),
             "pm_use_real": tk.BooleanVar(value=False),
             "pm_resource": tk.StringVar(value=""),
-            "pm_wavelength": tk.StringVar(value="532"),
+            "pm_wavelength": tk.StringVar(value=""),
+            "jog_step": tk.StringVar(value="1"),
             "status": tk.StringVar(value="未连接"),
             "progress": tk.DoubleVar(value=0.0),
             "pos": tk.StringVar(value="X: 0.000 mm   Y: 0.000 mm"),
+            "pos_x": tk.StringVar(value="X: 0.000 mm"),
+            "pos_y": tk.StringVar(value="Y: 0.000 mm"),
+            "range_x": tk.StringVar(value="软限位: —"),
+            "range_y": tk.StringVar(value="软限位: —"),
             "limits": tk.StringVar(value="限位: —"),
         }
         self.v = v
@@ -163,7 +179,7 @@ class ScanApp:
     def _build_ui(self):
         root = self.root
         root.title("EtherCAT 双轴滑台扫描采集")
-        root.geometry("900x760")
+        root.geometry("900x840")
         root.columnconfigure(0, weight=1)
 
         # 1) 硬件连接
@@ -195,7 +211,7 @@ class ScanApp:
         self._lbl(fhw, "波长(nm)", 7, 0)
         ttk.Entry(fhw, textvariable=self.v["pm_wavelength"], width=10).grid(
             row=7, column=1, sticky="w", padx=2)
-        ttk.Label(fhw, text="(资源名留空则自动搜索 0x1313::0x8072)").grid(
+        ttk.Label(fhw, text="(资源名留空自动搜索 0x1313::0x8072；波长留空则沿用探头当前校准)").grid(
             row=8, column=1, columnspan=3, sticky="w", padx=2)
 
         # 1.5) 回零与限位
@@ -242,8 +258,9 @@ class ScanApp:
         self.btn_save = ttk.Button(fctl, text="保存CSV", command=self._on_save_csv, state="disabled")
         self.btn_saveplot = ttk.Button(fctl, text="保存热力图", command=self._on_save_plot, state="disabled")
         self.btn_savecfg = ttk.Button(fctl, text="保存配置", command=self._on_save_config)
+        self.btn_selftest = ttk.Button(fctl, text="自检", command=self._on_selftest, state="disabled")
         for b in (self.btn_connect, self.btn_home, self.btn_start, self.btn_stop,
-                  self.btn_save, self.btn_saveplot, self.btn_savecfg):
+                  self.btn_save, self.btn_saveplot, self.btn_savecfg, self.btn_selftest):
             b.pack(side="left", padx=4)
         self.btn_home.config(state="disabled")
         self.btn_start.config(state="disabled")
@@ -251,16 +268,42 @@ class ScanApp:
         # 4) 进度
         fprog = ttk.Frame(root)
         fprog.grid(row=4, column=0, sticky="ew", padx=6, pady=2)
-        ttk.Label(fprog, textvariable=self.v["pos"]).pack(side="left", padx=(0, 16))
         ttk.Label(fprog, textvariable=self.v["limits"]).pack(side="left", padx=(0, 16))
         ttk.Label(fprog, textvariable=self.v["status"]).pack(side="left")
         ttk.Progressbar(fprog, variable=self.v["progress"], maximum=100).pack(
             side="right", fill="x", expand=True, padx=8)
 
-        # 5) 热力图 + 日志
+        # 5) 实时位置与软限位 / 手动点动
+        fpos = ttk.LabelFrame(root, text="实时位置与软限位 / 手动点动")
+        fpos.grid(row=5, column=0, sticky="ew", padx=6, pady=4)
+        fpos.columnconfigure(3, weight=1)
+        bg = root.cget("background")
+        ttk.Label(fpos, text="X", width=2).grid(row=0, column=0, sticky="e", padx=(4, 2))
+        ttk.Label(fpos, textvariable=self.v["pos_x"], width=13).grid(row=0, column=1, sticky="w", padx=2)
+        ttk.Label(fpos, textvariable=self.v["range_x"], width=22).grid(row=0, column=2, sticky="w", padx=2)
+        self._ruler_x = tk.Canvas(fpos, height=26, highlightthickness=0, bg=bg)
+        self._ruler_x.grid(row=0, column=3, sticky="ew", padx=(4, 8))
+        btn_xn = ttk.Button(fpos, text="-X", width=5, command=lambda: self._on_jog("X", -1))
+        btn_xn.grid(row=0, column=4, padx=2)
+        btn_xp = ttk.Button(fpos, text="+X", width=5, command=lambda: self._on_jog("X", +1))
+        btn_xp.grid(row=0, column=5, padx=2)
+        ttk.Label(fpos, text="Y", width=2).grid(row=1, column=0, sticky="e", padx=(4, 2))
+        ttk.Label(fpos, textvariable=self.v["pos_y"], width=13).grid(row=1, column=1, sticky="w", padx=2)
+        ttk.Label(fpos, textvariable=self.v["range_y"], width=22).grid(row=1, column=2, sticky="w", padx=2)
+        self._ruler_y = tk.Canvas(fpos, height=26, highlightthickness=0, bg=bg)
+        self._ruler_y.grid(row=1, column=3, sticky="ew", padx=(4, 8))
+        btn_yn = ttk.Button(fpos, text="-Y", width=5, command=lambda: self._on_jog("Y", -1))
+        btn_yn.grid(row=1, column=4, padx=2)
+        btn_yp = ttk.Button(fpos, text="+Y", width=5, command=lambda: self._on_jog("Y", +1))
+        btn_yp.grid(row=1, column=5, padx=2)
+        self._jog_buttons = [btn_xn, btn_xp, btn_yn, btn_yp]
+        ttk.Label(fpos, text="点动步长(mm)").grid(row=2, column=1, sticky="e", padx=2)
+        ttk.Entry(fpos, textvariable=self.v["jog_step"], width=8).grid(row=2, column=2, sticky="w", padx=2)
+
+        # 6) 热力图 + 日志
         fbottom = ttk.Frame(root)
-        fbottom.grid(row=5, column=0, sticky="nsew", padx=6, pady=4)
-        root.rowconfigure(5, weight=1)
+        fbottom.grid(row=6, column=0, sticky="nsew", padx=6, pady=4)
+        root.rowconfigure(6, weight=1)
         fbottom.columnconfigure(0, weight=1)
         fbottom.rowconfigure(0, weight=1)
 
@@ -295,21 +338,28 @@ class ScanApp:
     def _update_buttons(self):
         """集中管理按钮互锁 (单一状态源)。
 
-        依据 self._state ∈ {idle, connecting, homing, scanning} / 是否已连接 / 有无数据，
-        统一刷新六个按钮的可用状态。
+        依据 self._state ∈ {idle, connecting, homing, jog, scanning, selftest} /
+        是否已连接 / 有无数据，统一刷新各按钮的可用状态。
         """
         state = self._state
         connected = self.scanner is not None
         have_data = connected and len(self.scanner.result) > 0
         idle = connected and state == "idle"
 
-        self.btn_connect.config(state="normal" if state == "idle" else "disabled")
+        self.btn_connect.config(
+            state="normal" if state == "idle" else "disabled",
+            text="断开" if (state == "idle" and connected) else "连接")
         self.btn_home.config(state="normal" if idle else "disabled")
         self.btn_start.config(state="normal" if idle else "disabled")
-        # 停止仅在扫描中可用; 回零是阻塞调用无法中断, 不提供假停止按钮
-        self.btn_stop.config(state="normal" if state == "scanning" else "disabled")
+        # 停止在扫描/自检中可用; 回零与点动是短促阻塞操作，不提供假停止按钮
+        self.btn_stop.config(state="normal" if state in ("scanning", "selftest") else "disabled")
         self.btn_save.config(state="normal" if (idle and have_data) else "disabled")
         self.btn_saveplot.config(state="normal" if (idle and have_data and HAVE_MPL) else "disabled")
+        # 手动点动 + 自检 (仅空闲且已连接时可用)
+        for b in self._jog_buttons:
+            b.config(state="normal" if idle else "disabled")
+        if self.btn_selftest is not None:
+            self.btn_selftest.config(state="normal" if idle else "disabled")
 
     def _set_state(self, state: str):
         self._state = state
@@ -320,7 +370,11 @@ class ScanApp:
         return ax.read_actual_position() / (ax.pulses_per_mm * ax.direction)
 
     def _set_pos(self, x_mm: float, y_mm: float):
+        self._cur_pos = (x_mm, y_mm)
         self.v["pos"].set(f"X: {x_mm:.3f} mm   Y: {y_mm:.3f} mm")
+        self.v["pos_x"].set(f"X: {x_mm:8.3f} mm")
+        self.v["pos_y"].set(f"Y: {y_mm:8.3f} mm")
+        self._draw_rulers()
 
     def _refresh_pos(self):
         """空闲时读取两轴实际位置与限位状态 (扫描中由 point 事件显示目标坐标，避免争用总线)。"""
@@ -342,6 +396,51 @@ class ScanApp:
                     f"正{'√' if st['pos'] else '·'} "
                     f"原点{'√' if st['home'] else '·'}]")
         self.v["limits"].set("限位: " + "  ".join(_fmt(ax) for ax in (x_ax, y_ax)))
+
+    def _update_ranges(self):
+        """从当前轴读取软限位区间，刷新区间文本与标尺。"""
+        sc = self.scanner
+        self._x_range = sc.x.soft_limits if sc is not None else None
+        self._y_range = sc.y.soft_limits if sc is not None else None
+        for key, rng in (("range_x", self._x_range), ("range_y", self._y_range)):
+            if rng and rng[0] is not None and rng[1] is not None:
+                self.v[key].set(f"软限位: {rng[0]:g} ~ {rng[1]:g} mm")
+            else:
+                self.v[key].set("软限位: 未设置")
+        self._draw_rulers()
+
+    def _draw_rulers(self):
+        if self._ruler_x is None or self._ruler_y is None:
+            return
+        x, y = self._cur_pos
+        self._draw_ruler(self._ruler_x, x, self._x_range)
+        self._draw_ruler(self._ruler_y, y, self._y_range)
+
+    def _draw_ruler(self, canvas, cur, rng):
+        canvas.delete("all")
+        w, h = canvas.winfo_width(), canvas.winfo_height()
+        if w < 60 or h < 10:
+            return
+        lo = hi = None
+        if rng:
+            lo, hi = rng
+        if lo is None or hi is None or hi <= lo:
+            canvas.create_text(w // 2, h // 2, text="软限位未设置", anchor="center",
+                               font=("", 8), fill="#888")
+            return
+        m = 28
+        x0, x1, y = m, w - m, h // 2
+        canvas.create_line(x0, y, x1, y, fill="#bbb")
+        canvas.create_line(x0, y - 4, x0, y + 4, fill="#666")
+        canvas.create_line(x1, y - 4, x1, y + 4, fill="#666")
+        canvas.create_text(x0, y + 10, text=f"{lo:g}", anchor="n", font=("", 8), fill="#666")
+        canvas.create_text(x1, y + 10, text=f"{hi:g}", anchor="n", font=("", 8), fill="#666")
+        out = cur < lo or cur > hi
+        clamped = max(lo, min(hi, cur))
+        xc = x0 + (clamped - lo) / (hi - lo) * (x1 - x0)
+        color = "#c00" if out else "#06c"
+        canvas.create_line(xc, y - 5, xc, y + 5, fill=color, width=2)
+        canvas.create_text(xc, y - 8, text=f"{cur:.2f}", anchor="s", font=("", 8), fill=color)
 
     def _poll_pos(self):
         self._refresh_pos()
@@ -378,7 +477,7 @@ class ScanApp:
             "home": v["home"].get(),
             "pm_use_real": v["pm_use_real"].get(),
             "pm_resource": v["pm_resource"].get().strip(),
-            "pm_wavelength": self._num("pm_wavelength", 532.0),
+            "pm_wavelength": self._opt_num("pm_wavelength"),
         }
 
     def _scan_config(self, p) -> ScanConfig:
@@ -444,11 +543,30 @@ class ScanApp:
         self.meter = None
         self.scanner = None
 
+    def _disconnect(self):
+        """主动断开：释放设备、复位状态显示与热力图。"""
+        self._close_devices()
+        self.v["status"].set("未连接")
+        self.v["pos"].set("X: 0.000 mm   Y: 0.000 mm")
+        self.v["pos_x"].set("X: 0.000 mm")
+        self.v["pos_y"].set("Y: 0.000 mm")
+        self.v["limits"].set("限位: —")
+        self.v["progress"].set(0.0)
+        self._x_range = self._y_range = None
+        self._cur_pos = (0.0, 0.0)
+        self._update_ranges()
+        self._clear_heatmap()
+        self._log("已断开")
+        self._update_buttons()
+
     # ---------------- 动作 ----------------
     def _on_connect(self):
         if self._state != "idle":
             return
-        # 重复连接前先释放旧设备，避免句柄泄漏
+        if self.scanner is not None:
+            self._disconnect()
+            return
+        # 连接前先释放可能残留的旧设备，避免句柄泄漏
         self._close_devices()
         p = self._collect_params()
         if p["dry_run"]:
@@ -456,6 +574,8 @@ class ScanApp:
                 self._build_scanner(p)
                 self._log("已连接 (模拟轴 + 模拟功率计)")
                 self.v["status"].set("已连接(模拟)")
+                self._update_ranges()
+                self._refresh_pos()
             except Exception as e:
                 self._log(f"[错误] {e}")
                 self.v["status"].set("未连接")
@@ -533,11 +653,64 @@ class ScanApp:
         self.events.put(("point", (i, x, y, p, total)))
 
     def _on_stop(self):
-        if self._state != "scanning":
+        if self._state not in ("scanning", "selftest"):
             return
         if self.scanner is not None:
             self.scanner.abort()
-        self._log("已请求停止，等待当前点完成...")
+        self._log("已请求停止，等待当前动作完成...")
+
+    # ---------------- 手动点动 / 自检 ----------------
+    def _on_jog(self, ax_name: str, direction: int):
+        if self.scanner is None or self._state != "idle":
+            return
+        step_mm = self._num("jog_step", 1.0)
+        if step_mm <= 0:
+            messagebox.showwarning("提示", "点动步长需为正数")
+            return
+        ax = self.scanner.x if ax_name == "X" else self.scanner.y
+        self._set_state("jog")
+        self.v["status"].set(f"{ax_name} 轴点动 {direction * step_mm:+.3f} mm ...")
+        threading.Thread(target=self._run_jog, args=(ax, direction, step_mm), daemon=True).start()
+
+    def _run_jog(self, ax, direction: int, step_mm: float):
+        try:
+            if hasattr(ax, "setup_pp"):
+                ax.setup_pp()
+            ax.enable()
+            delta_pul = int(round(direction * step_mm * ax.pulses_per_mm * ax.direction))
+            ax.move_rel(delta_pul)
+            ax.wait_target_reached(10.0)
+            self.events.put(("idle", None))
+        except Exception as e:
+            self.events.put(("error", str(e)))
+
+    def _on_selftest(self):
+        if self.scanner is None or self._state != "idle":
+            return
+        from .selftest import can_selftest
+        if not (can_selftest(self.scanner.x) and can_selftest(self.scanner.y)):
+            messagebox.showwarning("提示", "当前轴无硬件开关读取能力 (模拟轴)，无法自检")
+            return
+        self.scanner._aborted = False
+        self._set_state("selftest")
+        self.v["status"].set("自检中...")
+        threading.Thread(target=self._run_selftest, daemon=True).start()
+
+    def _run_selftest(self):
+        from .selftest import run_axis_selftest
+        try:
+            for ax in (self.scanner.x, self.scanner.y):
+                self.events.put(("log", f"自检 {ax.name} 轴: 回零 → 负限位 → 正限位 ..."))
+                res = run_axis_selftest(ax, should_stop=lambda: self.scanner._aborted)
+                mark = "通过" if res.ok else "异常"
+                self.events.put(("log", f"{ax.name} 轴自检[{mark}]: {res.detail}"))
+            self.events.put(("selftest_done", None))
+        except Exception as e:
+            if self.scanner._aborted:
+                self.events.put(("log", "自检已中止"))
+                self.events.put(("idle", None))
+            else:
+                self.events.put(("error", str(e)))
 
     def _on_save_csv(self):
         if self.scanner is None or not self.scanner.result:
@@ -563,6 +736,24 @@ class ScanApp:
             self._log(f"已保存 {path}")
 
     # ---------------- 热力图 ----------------
+    def _clear_heatmap(self):
+        """清空热力图显示 (断开/重置时)。"""
+        if not HAVE_MPL:
+            return
+        self._z = None
+        self._im = None
+        self._ax.clear()
+        self._ax.set_xlabel("X (mm)")
+        self._ax.set_ylabel("Y (mm)")
+        self._ax.set_title("Power map")
+        if self._cbar is not None:
+            try:
+                self._cbar.remove()
+            except Exception:
+                pass
+        self._cbar = None
+        self._canvas.draw_idle()
+
     def _init_heatmap(self):
         if not HAVE_MPL or self.scanner is None:
             return
@@ -622,6 +813,7 @@ class ScanApp:
             self._log("已连接")
             self.v["status"].set("已连接")
             self._set_state("idle")
+            self._update_ranges()
             self._refresh_pos()
         elif kind == "idle":
             self.v["status"].set("就绪")
@@ -630,6 +822,11 @@ class ScanApp:
         elif kind == "done":
             self._log("扫描完成")
             self.v["status"].set("完成")
+            self._set_state("idle")
+            self._refresh_pos()
+        elif kind == "selftest_done":
+            self._log("自检完成")
+            self.v["status"].set("自检完成")
             self._set_state("idle")
             self._refresh_pos()
         elif kind == "error":

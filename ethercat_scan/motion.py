@@ -29,6 +29,10 @@ class Axis(ABC):
     def move_abs(self, position: int) -> None:
         """绝对定位。position 单位: 脉冲。"""
 
+    def move_rel(self, delta: int) -> None:
+        """相对定位 (可选，用于点动/自检)。delta 单位: 脉冲。"""
+        raise NotImplementedError
+
     @abstractmethod
     def wait_target_reached(self, timeout: float = 10.0) -> bool:
         """等待到位。"""
@@ -67,6 +71,11 @@ class SimulatedAxis(Axis):
         if self.travel_time > 0:
             time.sleep(self.travel_time)
         self._pos = position
+
+    def move_rel(self, delta: int) -> None:
+        if self.travel_time > 0:
+            time.sleep(self.travel_time)
+        self._pos += delta
 
     def wait_target_reached(self, timeout: float = 10.0) -> bool:
         return True

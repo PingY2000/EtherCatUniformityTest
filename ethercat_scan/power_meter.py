@@ -115,14 +115,16 @@ class Pm100usbPowerMeter(PowerMeter):
 
     resource: VISA 资源名，如 "USB0::0x1313::0x8072::Mxxxxxxx::INSTR"；
               留空则在已连接设备中按 VID/PID 自动搜索。
-    wavelength_nm: 激光波长 (nm)。光电二极管探头响应度随波长变化，务必设对。
+    wavelength_nm: 激光波长 (nm)，None 则不设置、沿用探头当前校准。
+                   PD 探头响应度随波长变化，设错只影响功率绝对值；
+                   对均匀性(相对分布)扫描影响可忽略。
     auto_range: 开启自动量程 (对应探头旋转 ND 滤光片)。
     """
 
     _VID = 0x1313          # Thorlabs
     _PID = 0x8072          # PM100USB
 
-    def __init__(self, resource: str = "", wavelength_nm: float = 532.0,
+    def __init__(self, resource: str = "", wavelength_nm=None,
                  auto_range: bool = True, timeout_ms: int = 3000):
         self.resource = (resource or "").strip()
         self.wavelength_nm = wavelength_nm
@@ -155,7 +157,8 @@ class Pm100usbPowerMeter(PowerMeter):
         rm = pyvisa.ResourceManager()
         self._instr = rm.open_resource(self._resolve_resource(), read_termination="\n")
         self._instr.timeout = self.timeout_ms
-        self._instr.write(f"SENS:CORR:WAV {self.wavelength_nm:g}")
+        if self.wavelength_nm is not None:
+            self._instr.write(f"SENS:CORR:WAV {self.wavelength_nm:g}")
         if self.auto_range:
             self._instr.write("SENS:POW:DC:RANG:AUTO ON")
 
