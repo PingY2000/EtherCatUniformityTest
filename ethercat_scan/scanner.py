@@ -69,6 +69,8 @@ class Scanner:
 
     def home(self):
         for ax in (self.x, self.y):
+            if self._aborted:
+                break
             ax.home()
 
     # ---------- 坐标换算 ----------

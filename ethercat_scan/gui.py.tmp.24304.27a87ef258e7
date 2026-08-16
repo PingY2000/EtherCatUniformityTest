@@ -5,17 +5,15 @@
 """
 from __future__ import annotations
 
-import json
 import queue
 import threading
 import time
 import tkinter as tk
-from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from .config import AxisConfig, ScanConfig
 from .motion import SimulatedAxis
-from .power_meter import Pm100usbPowerMeter, SimulatedPowerMeter
+from .power_meter import SimulatedPowerMeter
 from .scanner import Scanner, ScanResult
 
 try:
@@ -33,17 +31,6 @@ except Exception:
 
 
 class ScanApp:
-    # 需要持久化的配置项 (status/progress/pos/limits 为运行时状态，不保存)
-    _CONFIG_KEYS = [
-        "ifname", "dry_run",
-        "x_alias", "y_alias", "x_ppmm", "y_ppmm", "x_reverse", "y_reverse",
-        "x_home_method", "y_home_method",
-        "x_min", "x_max", "y_min", "y_max",
-        "x_start", "x_stop", "x_step", "y_start", "y_stop", "y_step",
-        "dwell", "samples", "snake", "home",
-        "pm_use_real", "pm_resource", "pm_wavelength",
-    ]
-
     def __init__(self, root: tk.Tk):
         self.root = root
         self.events = queue.Queue()
@@ -62,7 +49,6 @@ class ScanApp:
 
         self._build_vars()
         self._build_ui()
-        self._load_config()
         self._log("就绪。默认模拟运行(dry-run)；接真实硬件时取消勾选并填网卡名。")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(50, self._poll)
@@ -95,9 +81,6 @@ class ScanApp:
             "samples": tk.StringVar(value="1"),
             "snake": tk.BooleanVar(value=True),
             "home": tk.BooleanVar(value=False),
-            "pm_use_real": tk.BooleanVar(value=False),
-            "pm_resource": tk.StringVar(value=""),
-            "pm_wavelength": tk.StringVar(value="532"),
             "status": tk.StringVar(value="未连接"),
             "progress": tk.DoubleVar(value=0.0),
             "pos": tk.StringVar(value="X: 0.000 mm   Y: 0.000 mm"),
@@ -120,44 +103,6 @@ class ScanApp:
             return cast(s)
         except (ValueError, tk.TclError):
             return None
-
-    # ---------------- 配置持久化 ----------------
-    def _config_path(self) -> Path:
-        return Path.home() / ".ethercat_scan_config.json"
-
-    def _save_config(self) -> bool:
-        """把当前配置写入用户目录 JSON，供下次启动恢复。"""
-        try:
-            data = {k: self.v[k].get() for k in self._CONFIG_KEYS}
-            path = self._config_path()
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            self._log(f"配置已保存: {path}")
-            return True
-        except Exception as e:
-            self._log(f"[错误] 保存配置失败: {e}")
-            return False
-
-    def _load_config(self):
-        """启动时从 JSON 恢复上次配置 (缺失项保持默认)。"""
-        try:
-            path = self._config_path()
-            if not path.exists():
-                return
-            data = json.loads(path.read_text(encoding="utf-8"))
-            for k in self._CONFIG_KEYS:
-                if k not in data:
-                    continue
-                val = data[k]
-                if isinstance(self.v[k], tk.BooleanVar):
-                    self.v[k].set(bool(val))
-                else:
-                    self.v[k].set(str(val))
-            self._log(f"已加载上次配置: {path}")
-        except Exception as e:
-            self._log(f"[警告] 加载配置失败，使用默认值: {e}")
-
-    def _on_save_config(self):
-        self._save_config()
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -185,18 +130,6 @@ class ScanApp:
         self._lbl(fhw, "Y 脉冲/mm", 3, 2)
         ttk.Entry(fhw, textvariable=self.v["y_ppmm"], width=10).grid(row=3, column=3, sticky="w", padx=2)
         ttk.Checkbutton(fhw, text="Y 反向", variable=self.v["y_reverse"]).grid(row=4, column=3, sticky="w", padx=2)
-        # 功率计 (Thorlabs PM100USB + PD300R)
-        self._lbl(fhw, "功率计", 5, 0)
-        ttk.Checkbutton(fhw, text="真实功率计 (PM100USB)", variable=self.v["pm_use_real"]).grid(
-            row=5, column=1, columnspan=3, sticky="w", padx=2)
-        self._lbl(fhw, "资源名", 6, 0)
-        ttk.Entry(fhw, textvariable=self.v["pm_resource"], width=40).grid(
-            row=6, column=1, columnspan=3, sticky="w", padx=2)
-        self._lbl(fhw, "波长(nm)", 7, 0)
-        ttk.Entry(fhw, textvariable=self.v["pm_wavelength"], width=10).grid(
-            row=7, column=1, sticky="w", padx=2)
-        ttk.Label(fhw, text="(资源名留空则自动搜索 0x1313::0x8072)").grid(
-            row=8, column=1, columnspan=3, sticky="w", padx=2)
 
         # 1.5) 回零与限位
         fhl = ttk.LabelFrame(root, text="回零与限位 (软限位单位 mm，相对回零原点)")
@@ -241,9 +174,8 @@ class ScanApp:
         self.btn_stop = ttk.Button(fctl, text="停止", command=self._on_stop, state="disabled")
         self.btn_save = ttk.Button(fctl, text="保存CSV", command=self._on_save_csv, state="disabled")
         self.btn_saveplot = ttk.Button(fctl, text="保存热力图", command=self._on_save_plot, state="disabled")
-        self.btn_savecfg = ttk.Button(fctl, text="保存配置", command=self._on_save_config)
         for b in (self.btn_connect, self.btn_home, self.btn_start, self.btn_stop,
-                  self.btn_save, self.btn_saveplot, self.btn_savecfg):
+                  self.btn_save, self.btn_saveplot):
             b.pack(side="left", padx=4)
         self.btn_home.config(state="disabled")
         self.btn_start.config(state="disabled")
@@ -295,24 +227,28 @@ class ScanApp:
     def _update_buttons(self):
         """集中管理按钮互锁 (单一状态源)。
 
-        依据 self._state ∈ {idle, connecting, homing, scanning} / 是否已连接 / 有无数据，
+        依据 running(回零/扫描中) / connecting(连接中) / 是否已连接 / 有无数据，
         统一刷新六个按钮的可用状态。
         """
-        state = self._state
+        running = self._running
+        connecting = self._connecting
         connected = self.scanner is not None
         have_data = connected and len(self.scanner.result) > 0
-        idle = connected and state == "idle"
+        idle = connected and not running and not connecting
 
-        self.btn_connect.config(state="normal" if state == "idle" else "disabled")
+        self.btn_connect.config(state="disabled" if (running or connecting) else "normal")
         self.btn_home.config(state="normal" if idle else "disabled")
         self.btn_start.config(state="normal" if idle else "disabled")
-        # 停止仅在扫描中可用; 回零是阻塞调用无法中断, 不提供假停止按钮
-        self.btn_stop.config(state="normal" if state == "scanning" else "disabled")
+        self.btn_stop.config(state="normal" if running else "disabled")
         self.btn_save.config(state="normal" if (idle and have_data) else "disabled")
         self.btn_saveplot.config(state="normal" if (idle and have_data and HAVE_MPL) else "disabled")
 
-    def _set_state(self, state: str):
-        self._state = state
+    def _set_running(self, running: bool):
+        self._running = running
+        self._update_buttons()
+
+    def _set_connecting(self, connecting: bool):
+        self._connecting = connecting
         self._update_buttons()
 
     # ---------------- 位置显示 ----------------
@@ -325,7 +261,7 @@ class ScanApp:
     def _refresh_pos(self):
         """空闲时读取两轴实际位置与限位状态 (扫描中由 point 事件显示目标坐标，避免争用总线)。"""
         sc = self.scanner
-        if sc is None or self._state != "idle":
+        if sc is None or self._running:
             return
         try:
             self._set_pos(self._axis_mm(sc.x), self._axis_mm(sc.y))
@@ -376,9 +312,6 @@ class ScanApp:
             "samples": self._num("samples", 1, int),
             "snake": v["snake"].get(),
             "home": v["home"].get(),
-            "pm_use_real": v["pm_use_real"].get(),
-            "pm_resource": v["pm_resource"].get().strip(),
-            "pm_wavelength": self._num("pm_wavelength", 532.0),
         }
 
     def _scan_config(self, p) -> ScanConfig:
@@ -394,13 +327,9 @@ class ScanApp:
     def _build_scanner(self, p):
         """用普通参数构建 scanner (可在工作线程调用，不碰 Tk)。"""
         cfg = self._scan_config(p)
-        # 功率计: 按 GUI 选择模拟光斑或真实 PM100USB (PD300R 探头)
-        center = ((cfg.x_start + cfg.x_stop) / 2, (cfg.y_start + cfg.y_stop) / 2)
-        if p["pm_use_real"]:
-            meter = Pm100usbPowerMeter(resource=p["pm_resource"],
-                                       wavelength_nm=p["pm_wavelength"])
-        else:
-            meter = SimulatedPowerMeter(center=center)
+        # 功率计: 未接入真实设备，先占位为模拟光斑 (真实设备见 power_meter.py)
+        meter = SimulatedPowerMeter(center=((cfg.x_start + cfg.x_stop) / 2,
+                                            (cfg.y_start + cfg.y_stop) / 2))
         meter.open()
         self.meter = meter
 
@@ -446,7 +375,7 @@ class ScanApp:
 
     # ---------------- 动作 ----------------
     def _on_connect(self):
-        if self._state != "idle":
+        if self._running or self._connecting:
             return
         # 重复连接前先释放旧设备，避免句柄泄漏
         self._close_devices()
@@ -465,7 +394,7 @@ class ScanApp:
         else:
             self._log("正在连接 EtherCAT ...")
             self.v["status"].set("连接中...")
-            self._set_state("connecting")
+            self._set_connecting(True)
             threading.Thread(target=self._connect_real, args=(p,), daemon=True).start()
 
     def _connect_real(self, p):
@@ -476,10 +405,10 @@ class ScanApp:
             self.events.put(("error", str(e)))
 
     def _on_home(self):
-        if self.scanner is None or self._state != "idle":
+        if self.scanner is None or self._running:
             return
         self.scanner._aborted = False
-        self._set_state("homing")
+        self._set_running(True)
         self.v["status"].set("回零中...")
         threading.Thread(target=self._run_home, daemon=True).start()
 
@@ -495,7 +424,7 @@ class ScanApp:
         if self.scanner is None:
             messagebox.showwarning("提示", "请先连接")
             return
-        if self._state != "idle":
+        if self._running:
             return
         # 扫描范围等参数以当前界面为准 (连接时只建立硬件/轴对象，范围在开始时读取)
         p = self._collect_params()
@@ -513,7 +442,7 @@ class ScanApp:
         self.scanner._aborted = False
         self.v["progress"].set(0)
         self.v["status"].set("扫描中...")
-        self._set_state("scanning")
+        self._set_running(True)
         home = self.v["home"].get()   # 主线程读，避免工作线程访问 Tk
         threading.Thread(target=self._run_scan, args=(home,), daemon=True).start()
 
@@ -533,8 +462,6 @@ class ScanApp:
         self.events.put(("point", (i, x, y, p, total)))
 
     def _on_stop(self):
-        if self._state != "scanning":
-            return
         if self.scanner is not None:
             self.scanner.abort()
         self._log("已请求停止，等待当前点完成...")
@@ -621,24 +548,24 @@ class ScanApp:
         elif kind == "connected":
             self._log("已连接")
             self.v["status"].set("已连接")
-            self._set_state("idle")
+            self._set_connecting(False)
             self._refresh_pos()
         elif kind == "idle":
             self.v["status"].set("就绪")
-            self._set_state("idle")
+            self._set_running(False)
             self._refresh_pos()
         elif kind == "done":
             self._log("扫描完成")
             self.v["status"].set("完成")
-            self._set_state("idle")
+            self._set_running(False)
             self._refresh_pos()
         elif kind == "error":
             self._log(f"[错误] {payload}")
             self.v["status"].set("出错")
-            self._set_state("idle")
+            self._set_running(False)
+            self._set_connecting(False)
 
     def _on_close(self):
-        self._save_config()
         if self.scanner is not None:
             self.scanner.abort()
         self._close_devices()
