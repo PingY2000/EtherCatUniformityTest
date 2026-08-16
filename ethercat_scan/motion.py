@@ -37,14 +37,24 @@ class Axis(ABC):
     def read_actual_position(self) -> int:
         """读实际位置 (脉冲)。"""
 
+    @property
+    def soft_limits(self):
+        """软限位 (min_mm, max_mm)，相对回零原点；None=无软限位。"""
+        return None
+
+    def read_limit_states(self):
+        """读限位/原点开关状态，返回 {"neg","pos","home"} 或 None(无此能力)。"""
+        return None
+
 
 class SimulatedAxis(Axis):
     """模拟轴: 无硬件时验证框架逻辑 (dry-run)。立即"到位"。"""
 
     def __init__(self, name: str = "X", pulses_per_mm: float = 1.0, direction: int = 1,
-                 travel_time: float = 0.0):
+                 travel_time: float = 0.0, soft_limits=None):
         super().__init__(name, pulses_per_mm, direction)
         self.travel_time = travel_time
+        self._soft_limits = soft_limits
         self._pos = 0
 
     def enable(self) -> None:
@@ -63,3 +73,7 @@ class SimulatedAxis(Axis):
 
     def read_actual_position(self) -> int:
         return self._pos
+
+    @property
+    def soft_limits(self):
+        return self._soft_limits

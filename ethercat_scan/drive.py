@@ -26,6 +26,7 @@ _OBJ = {
     "home_method": (0x6098, 0x00, "b"),
     "home_speed": (0x6099, 0x00, "I"),   # 子索引 1=找开关(快) 2=找零(慢)
     "home_acc": (0x609A, 0x00, "I"),
+    "digital_inputs": (0x60FD, 0x00, "I"),  # 输入端子状态: bit0=负限位 bit1=正限位 bit2=原点
 }
 
 MODE_PP, MODE_PV, MODE_HM, MODE_CSP = 1, 3, 6, 8
@@ -48,6 +49,11 @@ SW_OP_ENABLED = 1 << 2
 SW_FAULT = 1 << 3
 SW_TARGET_REACHED = 1 << 10
 SW_SETPOINT_ACK = 1 << 12
+
+# 数字输入 (60FDh) 位
+LIMIT_NEG = 1 << 0    # 负限位
+LIMIT_POS = 1 << 1    # 正限位
+LIMIT_HOME = 1 << 2   # 原点开关
 
 # 使能后的控制字基础值 (bit0~3 = 1)
 _OP_BASE = CW_SWITCH_ON | CW_ENABLE_VOLT | CW_QUICK_STOP | CW_ENABLE_OP  # 0x0F
@@ -163,6 +169,22 @@ class YkdDrive(Axis):
 
     def read_actual_position(self) -> int:
         return self._read("actual_pos")
+
+    # ---------- 限位 / 原点状态 (60FDh) ----------
+    def read_digital_inputs(self) -> int:
+        return self._read("digital_inputs")
+
+    def read_limit_states(self):
+        v = self.read_digital_inputs()
+        return {
+            "neg": bool(v & LIMIT_NEG),
+            "pos": bool(v & LIMIT_POS),
+            "home": bool(v & LIMIT_HOME),
+        }
+
+    @property
+    def soft_limits(self):
+        return (self.cfg.soft_limit_min_mm, self.cfg.soft_limit_max_mm)
 
     # ---------- 回零 (HM) ----------
     def home(self, timeout: float = 30.0):

@@ -111,10 +111,30 @@ pulses_per_mm = 电机转一圈脉冲数 / 丝杠导程(mm)
 3. `scan()` — 逐点: 走到 (x,y) → 等待到位 → 停留 `dwell` → 采 `samples` 次功率取平均 → 记录
 4. `save_csv()` / `save_heatmap()` — 导出
 
+## 回零与软限位
+
+框架把「回零原点 + 左右限位」结合成软限位保护：
+
+- **回零方式** (6098h)：`AxisConfig.home_method`，GUI/CLI 可选 17/18/24/29
+  （17=负限位, 18=正限位, 24/29=原点开关），按接线选择。
+- **软限位**：`AxisConfig.soft_limit_min_mm / soft_limit_max_mm`，以回零原点为 0、
+  单位 mm，扫描前校验范围、越界即报错；None 表示该方向不校验（默认）。
+- **限位状态**：读取 60FDh（Bit0=负限位, Bit1=正限位, Bit2=原点），GUI 空闲时实时显示。
+
+> 软限位只有在**回零之后**才与限位开关对齐，建议勾选「扫描前回零」。
+
+```bash
+python examples/run_scan.py \
+  --ifname "\\Device\\NPF_{GUID}" --x-alias 0 --y-alias 1 \
+  --home-method 24 \
+  --x-min 0 --x-max 100 --y-min 0 --y-max 100 \
+  --x-range 5 95 1 --y-range 5 95 1
+```
+
 ## 说明与注意
 
 - 本框架用 **SDO 控制** (不依赖周期 PDO)，简单可靠，适合逐点停测；默认不进 OP
   (从站 TxPDO 默认为空)。若后续要**连续扫描/CSP 同步**，需映射 PDO 并跑周期
   数据，可在 `drive.py`/`master.py` 基础上扩展。
 - 上电后若驱动器故障，`enable()` 会自动发 fault reset。
-- 回零方式 (6098h) 默认 17，需按你的限位开关接法在 `AxisConfig.home_method` 调整。
+- 回零方式 (6098h) 与软限位见上「回零与软限位」；软限位默认 None 不校验。

@@ -77,6 +77,25 @@ class Scanner:
         y_pul = int(round(y_mm * self.y.pulses_per_mm * self.y.direction))
         return x_pul, y_pul
 
+    # ---------- 软限位校验 ----------
+    def validate_soft_limits(self, cfg: Optional[ScanConfig] = None):
+        """校验扫描范围是否落在各轴软限位内 (mm，相对回零原点)。越界抛 RuntimeError。"""
+        cfg = cfg or self.cfg
+        for ax, start_mm, stop_mm in ((self.x, cfg.x_start, cfg.x_stop),
+                                      (self.y, cfg.y_start, cfg.y_stop)):
+            lim = ax.soft_limits
+            if not lim:
+                continue
+            lo_mm, hi_mm = lim
+            lo = min(start_mm, stop_mm)
+            hi = max(start_mm, stop_mm)
+            if lo_mm is not None and lo < lo_mm:
+                raise RuntimeError(
+                    f"{ax.name} 轴扫描范围下限 {lo:.3f} mm 低于软限位 {lo_mm:.3f} mm")
+            if hi_mm is not None and hi > hi_mm:
+                raise RuntimeError(
+                    f"{ax.name} 轴扫描范围上限 {hi:.3f} mm 超过软限位 {hi_mm:.3f} mm")
+
     # ---------- 单点采集 ----------
     def _move_and_settle(self, x_pul: int, y_pul: int):
         self.x.move_abs(x_pul)
@@ -103,6 +122,7 @@ class Scanner:
     def scan(self, progress_callback=None) -> ScanResult:
         """逐点扫描。progress_callback(i, x_mm, y_mm, power, total) 每点调用一次。"""
         t0 = time.monotonic()
+        self.validate_soft_limits()
         total = sum(1 for _ in raster_points(self.cfg))
         for i, (x_mm, y_mm) in enumerate(raster_points(self.cfg)):
             if self._aborted:

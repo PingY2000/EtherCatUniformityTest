@@ -16,6 +16,9 @@ class AxisConfig:
     脉冲数与毫米换算:
         pulses = mm * pulses_per_mm * direction
         pulses_per_mm 由丝杠导程、细分、电子齿轮(2408h/2409h)决定，按实际标定。
+
+    软限位 (soft_limit_min_mm / soft_limit_max_mm) 以回零原点为 0 定义物理行程边界
+    (mm)，扫描前用于校验范围、防止撞左右限位；None 表示该方向不校验。
     """
 
     name: str = "X"
@@ -35,6 +38,10 @@ class AxisConfig:
     home_speed_slow: int = 200        # 6099h:02  找零速度 (慢)
     home_accel: int = 50000           # 609Ah  回零加速度
     home_offset: int = 0              # 607Ch  回零后偏移 (pulses)
+
+    # 软限位 (mm, 相对回零原点；None=不校验)
+    soft_limit_min_mm: Optional[float] = None   # 负限位(左)软限位位置
+    soft_limit_max_mm: Optional[float] = None   # 正限位(右)软限位位置
 
 
 @dataclass

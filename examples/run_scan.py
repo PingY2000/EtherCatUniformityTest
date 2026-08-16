@@ -32,6 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--y-ppmm", type=float, default=1000.0, help="Y 轴脉冲/mm")
     p.add_argument("--x-dir", type=int, default=1, choices=[1, -1])
     p.add_argument("--y-dir", type=int, default=1, choices=[1, -1])
+    # 回零与软限位
+    p.add_argument("--home-method", type=int, default=17, choices=[17, 18, 24, 29],
+                   help="6098h 回零方式: 17=负限位, 18=正限位, 24/29=原点开关")
+    p.add_argument("--home-offset", type=int, default=0, help="607Ch 回零偏移 (pulses)")
+    p.add_argument("--x-min", type=float, default=None, help="X 软限位下限 (mm，相对回零原点)")
+    p.add_argument("--x-max", type=float, default=None, help="X 软限位上限 (mm)")
+    p.add_argument("--y-min", type=float, default=None, help="Y 软限位下限 (mm)")
+    p.add_argument("--y-max", type=float, default=None, help="Y 软限位上限 (mm)")
     # 扫描范围 (START STOP STEP)
     p.add_argument("--x-range", nargs=3, type=float, default=[0, 10, 1], metavar=("START", "STOP", "STEP"))
     p.add_argument("--y-range", nargs=3, type=float, default=[0, 10, 1], metavar=("START", "STOP", "STEP"))
@@ -66,8 +74,10 @@ def main():
 
     master = None
     if args.dry_run:
-        x_axis = SimulatedAxis("X", pulses_per_mm=args.x_ppmm, direction=args.x_dir)
-        y_axis = SimulatedAxis("Y", pulses_per_mm=args.y_ppmm, direction=args.y_dir)
+        x_axis = SimulatedAxis("X", pulses_per_mm=args.x_ppmm, direction=args.x_dir,
+                               soft_limits=(args.x_min, args.x_max))
+        y_axis = SimulatedAxis("Y", pulses_per_mm=args.y_ppmm, direction=args.y_dir,
+                               soft_limits=(args.y_min, args.y_max))
     else:
         from ethercat_scan.master import EtherCATMaster
         master = EtherCATMaster(args.ifname)
@@ -75,9 +85,17 @@ def main():
         master.find_drives()
         master.go_op()
         x_axis = master.make_drive(AxisConfig(name="X", alias=args.x_alias,
-                                              pulses_per_mm=args.x_ppmm, direction=args.x_dir))
+                                              pulses_per_mm=args.x_ppmm, direction=args.x_dir,
+                                              home_method=args.home_method,
+                                              home_offset=args.home_offset,
+                                              soft_limit_min_mm=args.x_min,
+                                              soft_limit_max_mm=args.x_max))
         y_axis = master.make_drive(AxisConfig(name="Y", alias=args.y_alias,
-                                              pulses_per_mm=args.y_ppmm, direction=args.y_dir))
+                                              pulses_per_mm=args.y_ppmm, direction=args.y_dir,
+                                              home_method=args.home_method,
+                                              home_offset=args.home_offset,
+                                              soft_limit_min_mm=args.y_min,
+                                              soft_limit_max_mm=args.y_max))
 
     try:
         sc = Scanner(x_axis, y_axis, meter, cfg)

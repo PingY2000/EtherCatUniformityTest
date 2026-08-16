@@ -62,6 +62,12 @@ class ScanApp:
             "y_ppmm": tk.StringVar(value="1000"),
             "x_reverse": tk.BooleanVar(value=False),
             "y_reverse": tk.BooleanVar(value=False),
+            "x_home_method": tk.StringVar(value="17"),
+            "y_home_method": tk.StringVar(value="17"),
+            "x_min": tk.StringVar(value=""),
+            "x_max": tk.StringVar(value=""),
+            "y_min": tk.StringVar(value=""),
+            "y_max": tk.StringVar(value=""),
             "x_start": tk.StringVar(value="0"),
             "x_stop": tk.StringVar(value="10"),
             "x_step": tk.StringVar(value="1"),
@@ -75,6 +81,7 @@ class ScanApp:
             "status": tk.StringVar(value="未连接"),
             "progress": tk.DoubleVar(value=0.0),
             "pos": tk.StringVar(value="X: 0.000 mm   Y: 0.000 mm"),
+            "limits": tk.StringVar(value="限位: —"),
         }
         self.v = v
 
@@ -83,6 +90,16 @@ class ScanApp:
             return cast(self.v[key].get())
         except (ValueError, tk.TclError):
             return default
+
+    def _opt_num(self, key, cast=float):
+        """解析可选数值：空串/非法 → None。"""
+        s = self.v[key].get().strip()
+        if not s:
+            return None
+        try:
+            return cast(s)
+        except (ValueError, tk.TclError):
+            return None
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -111,9 +128,25 @@ class ScanApp:
         ttk.Entry(fhw, textvariable=self.v["y_ppmm"], width=10).grid(row=3, column=3, sticky="w", padx=2)
         ttk.Checkbutton(fhw, text="Y 反向", variable=self.v["y_reverse"]).grid(row=4, column=3, sticky="w", padx=2)
 
+        # 1.5) 回零与限位
+        fhl = ttk.LabelFrame(root, text="回零与限位 (软限位单位 mm，相对回零原点)")
+        fhl.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
+        for col, name in enumerate(["X", "Y"]):
+            base = col * 4
+            self._lbl(fhl, f"{name} 回零方式", 0, base)
+            ttk.Combobox(fhl, textvariable=self.v[f"{name.lower()}_home_method"],
+                         values=["17", "18", "24", "29"], state="readonly", width=5).grid(
+                row=0, column=base + 1, sticky="w", padx=2)
+            self._lbl(fhl, f"{name} 软限位", 1, base)
+            ttk.Entry(fhl, textvariable=self.v[f"{name.lower()}_min"], width=8).grid(
+                row=1, column=base + 1, sticky="w", padx=2)
+            ttk.Label(fhl, text="至").grid(row=1, column=base + 2, sticky="w", padx=1)
+            ttk.Entry(fhl, textvariable=self.v[f"{name.lower()}_max"], width=8).grid(
+                row=1, column=base + 3, sticky="w", padx=2)
+
         # 2) 扫描参数
         fsc = ttk.LabelFrame(root, text="扫描参数 (mm)")
-        fsc.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
+        fsc.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
         for col, name in enumerate(["X", "Y"]):
             base = 1 + col * 2
             self._lbl(fsc, f"{name} 起点", 0, base)
@@ -131,7 +164,7 @@ class ScanApp:
 
         # 3) 控制按钮
         fctl = ttk.Frame(root)
-        fctl.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
+        fctl.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
         self.btn_connect = ttk.Button(fctl, text="连接", command=self._on_connect)
         self.btn_home = ttk.Button(fctl, text="回零", command=self._on_home)
         self.btn_start = ttk.Button(fctl, text="开始扫描", command=self._on_start)
@@ -146,16 +179,17 @@ class ScanApp:
 
         # 4) 进度
         fprog = ttk.Frame(root)
-        fprog.grid(row=3, column=0, sticky="ew", padx=6, pady=2)
+        fprog.grid(row=4, column=0, sticky="ew", padx=6, pady=2)
         ttk.Label(fprog, textvariable=self.v["pos"]).pack(side="left", padx=(0, 16))
+        ttk.Label(fprog, textvariable=self.v["limits"]).pack(side="left", padx=(0, 16))
         ttk.Label(fprog, textvariable=self.v["status"]).pack(side="left")
         ttk.Progressbar(fprog, variable=self.v["progress"], maximum=100).pack(
             side="right", fill="x", expand=True, padx=8)
 
         # 5) 热力图 + 日志
         fbottom = ttk.Frame(root)
-        fbottom.grid(row=4, column=0, sticky="nsew", padx=6, pady=4)
-        root.rowconfigure(4, weight=1)
+        fbottom.grid(row=5, column=0, sticky="nsew", padx=6, pady=4)
+        root.rowconfigure(5, weight=1)
         fbottom.columnconfigure(0, weight=1)
         fbottom.rowconfigure(0, weight=1)
 
@@ -209,14 +243,25 @@ class ScanApp:
         self.v["pos"].set(f"X: {x_mm:.3f} mm   Y: {y_mm:.3f} mm")
 
     def _refresh_pos(self):
-        """空闲时读取两轴实际位置 (扫描中由 point 事件显示目标坐标，避免与扫描线程争用总线)。"""
+        """空闲时读取两轴实际位置与限位状态 (扫描中由 point 事件显示目标坐标，避免争用总线)。"""
         sc = self.scanner
         if sc is None or self._running:
             return
         try:
             self._set_pos(self._axis_mm(sc.x), self._axis_mm(sc.y))
+            self._set_limits(sc.x, sc.y)
         except Exception:
             pass
+
+    def _set_limits(self, x_ax, y_ax):
+        def _fmt(ax):
+            st = ax.read_limit_states()
+            if st is None:
+                return f"{ax.name}[模拟]"
+            return (f"{ax.name}[负{'√' if st['neg'] else '·'} "
+                    f"正{'√' if st['pos'] else '·'} "
+                    f"原点{'√' if st['home'] else '·'}]")
+        self.v["limits"].set("限位: " + "  ".join(_fmt(ax) for ax in (x_ax, y_ax)))
 
     def _poll_pos(self):
         self._refresh_pos()
@@ -235,6 +280,12 @@ class ScanApp:
             "y_ppmm": self._num("y_ppmm", 1000.0),
             "x_reverse": v["x_reverse"].get(),
             "y_reverse": v["y_reverse"].get(),
+            "x_home_method": self._num("x_home_method", 17, int),
+            "y_home_method": self._num("y_home_method", 17, int),
+            "x_min": self._opt_num("x_min"),
+            "x_max": self._opt_num("x_max"),
+            "y_min": self._opt_num("y_min"),
+            "y_max": self._opt_num("y_max"),
             "x_start": self._num("x_start", 0.0),
             "x_stop": self._num("x_stop", 10.0),
             "x_step": self._num("x_step", 1.0),
@@ -269,8 +320,10 @@ class ScanApp:
         xdir = -1 if p["x_reverse"] else 1
         ydir = -1 if p["y_reverse"] else 1
         if p["dry_run"]:
-            x = SimulatedAxis("X", pulses_per_mm=p["x_ppmm"], direction=xdir)
-            y = SimulatedAxis("Y", pulses_per_mm=p["y_ppmm"], direction=ydir)
+            x = SimulatedAxis("X", pulses_per_mm=p["x_ppmm"], direction=xdir,
+                              soft_limits=(p["x_min"], p["x_max"]))
+            y = SimulatedAxis("Y", pulses_per_mm=p["y_ppmm"], direction=ydir,
+                              soft_limits=(p["y_min"], p["y_max"]))
             self.master = None
         else:
             from .master import EtherCATMaster
@@ -279,9 +332,15 @@ class ScanApp:
             master.find_drives()
             master.go_op()
             x = master.make_drive(AxisConfig(name="X", alias=p["x_alias"],
-                                             pulses_per_mm=p["x_ppmm"], direction=xdir))
+                                             pulses_per_mm=p["x_ppmm"], direction=xdir,
+                                             home_method=p["x_home_method"],
+                                             soft_limit_min_mm=p["x_min"],
+                                             soft_limit_max_mm=p["x_max"]))
             y = master.make_drive(AxisConfig(name="Y", alias=p["y_alias"],
-                                             pulses_per_mm=p["y_ppmm"], direction=ydir))
+                                             pulses_per_mm=p["y_ppmm"], direction=ydir,
+                                             home_method=p["y_home_method"],
+                                             soft_limit_min_mm=p["y_min"],
+                                             soft_limit_max_mm=p["y_max"]))
             self.master = master
 
         self.scanner = Scanner(x, y, meter, cfg)
@@ -332,6 +391,11 @@ class ScanApp:
         # 扫描范围等参数以当前界面为准 (连接时只建立硬件/轴对象，范围在开始时读取)
         p = self._collect_params()
         self.scanner.cfg = self._scan_config(p)
+        try:
+            self.scanner.validate_soft_limits()
+        except RuntimeError as e:
+            messagebox.showwarning("软限位越界", str(e))
+            return
         self.scanner.result = ScanResult()
         if isinstance(self.meter, SimulatedPowerMeter):
             self.meter.cx = (self.scanner.cfg.x_start + self.scanner.cfg.x_stop) / 2
