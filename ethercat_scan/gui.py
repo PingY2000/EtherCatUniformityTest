@@ -14,7 +14,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from .config import AxisConfig, ScanConfig
 from .motion import SimulatedAxis
 from .power_meter import SimulatedPowerMeter
-from .scanner import Scanner
+from .scanner import Scanner, ScanResult
 
 try:
     import numpy as np
@@ -34,6 +34,7 @@ class ScanApp:
         self.master = None
         self.meter = None
         self.scanner = None
+        self._running = False
 
         # 热力图相关
         self._fig = None
@@ -48,6 +49,7 @@ class ScanApp:
         self._log("就绪。默认模拟运行(dry-run)；接真实硬件时取消勾选并填网卡名。")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(50, self._poll)
+        self.root.after(200, self._poll_pos)
 
     # ---------------- 变量 ----------------
     def _build_vars(self):
@@ -72,6 +74,7 @@ class ScanApp:
             "home": tk.BooleanVar(value=False),
             "status": tk.StringVar(value="未连接"),
             "progress": tk.DoubleVar(value=0.0),
+            "pos": tk.StringVar(value="X: 0.000 mm   Y: 0.000 mm"),
         }
         self.v = v
 
@@ -144,6 +147,7 @@ class ScanApp:
         # 4) 进度
         fprog = ttk.Frame(root)
         fprog.grid(row=3, column=0, sticky="ew", padx=6, pady=2)
+        ttk.Label(fprog, textvariable=self.v["pos"]).pack(side="left", padx=(0, 16))
         ttk.Label(fprog, textvariable=self.v["status"]).pack(side="left")
         ttk.Progressbar(fprog, variable=self.v["progress"], maximum=100).pack(
             side="right", fill="x", expand=True, padx=8)
@@ -158,7 +162,7 @@ class ScanApp:
         if HAVE_MPL:
             self._fig = Figure(figsize=(5, 4), dpi=100)
             self._ax = self._fig.add_subplot(111)
-            self._im = self._ax.imshow([[0.0]], origin="lower", aspect="auto", cmap="inferno")
+            self._im = self._ax.imshow([[0.0]], origin="lower", aspect="equal", cmap="inferno")
             self._cbar = self._fig.colorbar(self._im, ax=self._ax)
             self._ax.set_xlabel("X (mm)")
             self._ax.set_ylabel("Y (mm)")
@@ -191,10 +195,32 @@ class ScanApp:
         self.btn_saveplot.config(state=state if (ok and HAVE_MPL) else "disabled")
 
     def _set_running(self, running: bool):
+        self._running = running
         self.btn_connect.config(state="disabled" if running else "normal")
         self.btn_home.config(state="disabled" if running else ("normal" if self.scanner else "disabled"))
         self.btn_start.config(state="disabled" if running else ("normal" if self.scanner else "disabled"))
         self.btn_stop.config(state="normal" if running else "disabled")
+
+    # ---------------- 位置显示 ----------------
+    def _axis_mm(self, ax) -> float:
+        return ax.read_actual_position() / (ax.pulses_per_mm * ax.direction)
+
+    def _set_pos(self, x_mm: float, y_mm: float):
+        self.v["pos"].set(f"X: {x_mm:.3f} mm   Y: {y_mm:.3f} mm")
+
+    def _refresh_pos(self):
+        """空闲时读取两轴实际位置 (扫描中由 point 事件显示目标坐标，避免与扫描线程争用总线)。"""
+        sc = self.scanner
+        if sc is None or self._running:
+            return
+        try:
+            self._set_pos(self._axis_mm(sc.x), self._axis_mm(sc.y))
+        except Exception:
+            pass
+
+    def _poll_pos(self):
+        self._refresh_pos()
+        self.root.after(200, self._poll_pos)
 
     # ---------------- 构建 scanner ----------------
     def _collect_params(self):
@@ -303,6 +329,13 @@ class ScanApp:
         if self.scanner is None:
             messagebox.showwarning("提示", "请先连接")
             return
+        # 扫描范围等参数以当前界面为准 (连接时只建立硬件/轴对象，范围在开始时读取)
+        p = self._collect_params()
+        self.scanner.cfg = self._scan_config(p)
+        self.scanner.result = ScanResult()
+        if isinstance(self.meter, SimulatedPowerMeter):
+            self.meter.cx = (self.scanner.cfg.x_start + self.scanner.cfg.x_stop) / 2
+            self.meter.cy = (self.scanner.cfg.y_start + self.scanner.cfg.y_stop) / 2
         self._init_heatmap()
         self.scanner._aborted = False
         self.v["progress"].set(0)
@@ -364,7 +397,7 @@ class ScanApp:
         self._z = np.full((ny, nx), np.nan)
         self._ax.clear()
         self._im = self._ax.imshow(
-            self._z, origin="lower", aspect="auto", cmap="inferno",
+            self._z, origin="lower", aspect="equal", cmap="inferno",
             extent=[cfg.x_start, cfg.x_stop, cfg.y_start, cfg.y_stop])
         self._ax.set_xlabel("X (mm)")
         self._ax.set_ylabel("Y (mm)")
@@ -408,20 +441,24 @@ class ScanApp:
             i, x, y, p, total = payload
             self.v["progress"].set((i + 1) / total * 100 if total else 0)
             self.v["status"].set(f"点 {i + 1}/{total}  ({x:.3f},{y:.3f})  {p:.6f} W")
+            self._set_pos(x, y)
             self._update_heatmap(x, y, p)
         elif kind == "connected":
             self._log("已连接")
             self.v["status"].set("已连接")
             self._set_connected(True)
+            self._refresh_pos()
         elif kind == "idle":
             self.v["status"].set("就绪")
             self._set_running(False)
             self._set_connected(True)
+            self._refresh_pos()
         elif kind == "done":
             self._log("扫描完成")
             self.v["status"].set("完成")
             self._set_running(False)
             self._set_connected(True)
+            self._refresh_pos()
         elif kind == "error":
             self._log(f"[错误] {payload}")
             self.v["status"].set("出错")
