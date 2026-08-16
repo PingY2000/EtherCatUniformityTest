@@ -179,95 +179,93 @@ class ScanApp:
     def _build_ui(self):
         root = self.root
         root.title("EtherCAT 双轴滑台扫描采集")
-        root.geometry("900x840")
+        root.geometry("980x840")
         root.columnconfigure(0, weight=1)
+        root.columnconfigure(1, weight=1)
 
-        # 1) 硬件连接
+        # 1) 硬件连接 (左) + 功率计 (右)
         fhw = ttk.LabelFrame(root, text="硬件连接")
-        fhw.grid(row=0, column=0, sticky="ew", padx=6, pady=4)
+        fhw.grid(row=0, column=0, sticky="ew", padx=(6, 3), pady=4)
         ttk.Checkbutton(fhw, text="模拟运行 (dry-run)", variable=self.v["dry_run"]).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=4)
         self._lbl(fhw, "网卡", 1, 0)
-        ttk.Entry(fhw, textvariable=self.v["ifname"], width=40).grid(row=1, column=1, columnspan=3, sticky="w", padx=2)
-        # X 轴
+        ttk.Entry(fhw, textvariable=self.v["ifname"], width=32).grid(
+            row=1, column=1, columnspan=3, sticky="w", padx=2)
         self._lbl(fhw, "X 站号", 2, 0)
         ttk.Entry(fhw, textvariable=self.v["x_alias"], width=6).grid(row=2, column=1, sticky="w", padx=2)
-        self._lbl(fhw, "X 脉冲/mm", 3, 0)
-        ttk.Entry(fhw, textvariable=self.v["x_ppmm"], width=10).grid(row=3, column=1, sticky="w", padx=2)
-        ttk.Checkbutton(fhw, text="X 反向", variable=self.v["x_reverse"]).grid(row=4, column=1, sticky="w", padx=2)
-        # Y 轴
         self._lbl(fhw, "Y 站号", 2, 2)
         ttk.Entry(fhw, textvariable=self.v["y_alias"], width=6).grid(row=2, column=3, sticky="w", padx=2)
+        self._lbl(fhw, "X 脉冲/mm", 3, 0)
+        ttk.Entry(fhw, textvariable=self.v["x_ppmm"], width=10).grid(row=3, column=1, sticky="w", padx=2)
         self._lbl(fhw, "Y 脉冲/mm", 3, 2)
         ttk.Entry(fhw, textvariable=self.v["y_ppmm"], width=10).grid(row=3, column=3, sticky="w", padx=2)
+        ttk.Checkbutton(fhw, text="X 反向", variable=self.v["x_reverse"]).grid(row=4, column=1, sticky="w", padx=2)
         ttk.Checkbutton(fhw, text="Y 反向", variable=self.v["y_reverse"]).grid(row=4, column=3, sticky="w", padx=2)
-        # 功率计 (Thorlabs PM100USB + PD300R)
-        self._lbl(fhw, "功率计", 5, 0)
-        ttk.Checkbutton(fhw, text="真实功率计 (PM100USB)", variable=self.v["pm_use_real"]).grid(
-            row=5, column=1, columnspan=3, sticky="w", padx=2)
-        self._lbl(fhw, "资源名", 6, 0)
-        ttk.Entry(fhw, textvariable=self.v["pm_resource"], width=40).grid(
-            row=6, column=1, columnspan=3, sticky="w", padx=2)
-        self._lbl(fhw, "波长(nm)", 7, 0)
-        ttk.Entry(fhw, textvariable=self.v["pm_wavelength"], width=10).grid(
-            row=7, column=1, sticky="w", padx=2)
-        ttk.Label(fhw, text="(资源名留空自动搜索 0x1313::0x8072；波长留空则沿用探头当前校准)").grid(
-            row=8, column=1, columnspan=3, sticky="w", padx=2)
 
-        # 1.5) 回零与限位
-        fhl = ttk.LabelFrame(root, text="回零与限位 (软限位单位 mm，相对回零原点)")
-        fhl.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
-        for col, name in enumerate(["X", "Y"]):
-            base = col * 4
-            self._lbl(fhl, f"{name} 回零方式", 0, base)
-            ttk.Combobox(fhl, textvariable=self.v[f"{name.lower()}_home_method"],
+        fpm = ttk.LabelFrame(root, text="功率计 (PM100USB + PD300R)")
+        fpm.grid(row=0, column=1, sticky="ew", padx=(3, 6), pady=4)
+        ttk.Checkbutton(fpm, text="真实功率计 (PM100USB)", variable=self.v["pm_use_real"]).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=4)
+        self._lbl(fpm, "资源名", 1, 0)
+        ttk.Entry(fpm, textvariable=self.v["pm_resource"], width=32).grid(row=1, column=1, sticky="w", padx=2)
+        self._lbl(fpm, "波长(nm)", 2, 0)
+        ttk.Entry(fpm, textvariable=self.v["pm_wavelength"], width=10).grid(row=2, column=1, sticky="w", padx=2)
+        ttk.Label(fpm, text="(资源名留空自动搜索；波长留空用探头当前校准)").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=4)
+
+        # 2) 回零与限位 (左) + 扫描参数 (右)
+        fhl = ttk.LabelFrame(root, text="回零与限位 (mm，相对原点)")
+        fhl.grid(row=1, column=0, sticky="ew", padx=(6, 3), pady=4)
+        for r, name in enumerate(["X", "Y"]):
+            k = name.lower()
+            self._lbl(fhl, f"{name} 回零方式", r, 0)
+            ttk.Combobox(fhl, textvariable=self.v[f"{k}_home_method"],
                          values=["17", "18", "24", "29"], state="readonly", width=5).grid(
-                row=0, column=base + 1, sticky="w", padx=2)
-            self._lbl(fhl, f"{name} 软限位", 1, base)
-            ttk.Entry(fhl, textvariable=self.v[f"{name.lower()}_min"], width=8).grid(
-                row=1, column=base + 1, sticky="w", padx=2)
-            ttk.Label(fhl, text="至").grid(row=1, column=base + 2, sticky="w", padx=1)
-            ttk.Entry(fhl, textvariable=self.v[f"{name.lower()}_max"], width=8).grid(
-                row=1, column=base + 3, sticky="w", padx=2)
+                row=r, column=1, sticky="w", padx=2)
+            self._lbl(fhl, f"{name} 软限位", r, 2)
+            ttk.Entry(fhl, textvariable=self.v[f"{k}_min"], width=7).grid(row=r, column=3, sticky="w", padx=2)
+            ttk.Label(fhl, text="~").grid(row=r, column=4, sticky="w")
+            ttk.Entry(fhl, textvariable=self.v[f"{k}_max"], width=7).grid(row=r, column=5, sticky="w", padx=2)
 
-        # 2) 扫描参数
         fsc = ttk.LabelFrame(root, text="扫描参数 (mm)")
-        fsc.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
-        for col, name in enumerate(["X", "Y"]):
-            base = 1 + col * 2
-            self._lbl(fsc, f"{name} 起点", 0, base)
-            ttk.Entry(fsc, textvariable=self.v[f"{name.lower()}_start"], width=8).grid(row=0, column=base + 1, sticky="w", padx=2)
-            self._lbl(fsc, f"{name} 终点", 1, base)
-            ttk.Entry(fsc, textvariable=self.v[f"{name.lower()}_stop"], width=8).grid(row=1, column=base + 1, sticky="w", padx=2)
-            self._lbl(fsc, f"{name} 步长", 2, base)
-            ttk.Entry(fsc, textvariable=self.v[f"{name.lower()}_step"], width=8).grid(row=2, column=base + 1, sticky="w", padx=2)
-        self._lbl(fsc, "停留(s)", 0, 5)
-        ttk.Entry(fsc, textvariable=self.v["dwell"], width=8).grid(row=0, column=6, sticky="w", padx=2)
-        self._lbl(fsc, "每点采样", 1, 5)
-        ttk.Entry(fsc, textvariable=self.v["samples"], width=8).grid(row=1, column=6, sticky="w", padx=2)
-        ttk.Checkbutton(fsc, text="蛇形往返", variable=self.v["snake"]).grid(row=2, column=6, sticky="w", padx=2)
-        ttk.Checkbutton(fsc, text="扫描前回零", variable=self.v["home"]).grid(row=2, column=5, sticky="w", padx=2)
+        fsc.grid(row=1, column=1, sticky="ew", padx=(3, 6), pady=4)
+        for r, (key, lbl) in enumerate([("start", "起点"), ("stop", "终点"), ("step", "步长")]):
+            self._lbl(fsc, f"X {lbl}", r, 0)
+            ttk.Entry(fsc, textvariable=self.v[f"x_{key}"], width=7).grid(row=r, column=1, sticky="w", padx=2)
+            self._lbl(fsc, f"Y {lbl}", r, 2)
+            ttk.Entry(fsc, textvariable=self.v[f"y_{key}"], width=7).grid(row=r, column=3, sticky="w", padx=2)
+        self._lbl(fsc, "停留(s)", 0, 4)
+        ttk.Entry(fsc, textvariable=self.v["dwell"], width=7).grid(row=0, column=5, sticky="w", padx=2)
+        self._lbl(fsc, "每点采样", 1, 4)
+        ttk.Entry(fsc, textvariable=self.v["samples"], width=7).grid(row=1, column=5, sticky="w", padx=2)
+        ttk.Checkbutton(fsc, text="扫描前回零", variable=self.v["home"]).grid(row=3, column=0, columnspan=2, sticky="w", padx=2)
+        ttk.Checkbutton(fsc, text="蛇形", variable=self.v["snake"]).grid(row=3, column=2, columnspan=2, sticky="w", padx=2)
 
-        # 3) 控制按钮
+        # 3) 控制按钮 (运动控制 左 / 数据 右)
         fctl = ttk.Frame(root)
-        fctl.grid(row=3, column=0, sticky="ew", padx=6, pady=4)
-        self.btn_connect = ttk.Button(fctl, text="连接", command=self._on_connect)
-        self.btn_home = ttk.Button(fctl, text="回零", command=self._on_home)
-        self.btn_start = ttk.Button(fctl, text="开始扫描", command=self._on_start)
-        self.btn_stop = ttk.Button(fctl, text="停止", command=self._on_stop, state="disabled")
-        self.btn_save = ttk.Button(fctl, text="保存CSV", command=self._on_save_csv, state="disabled")
-        self.btn_saveplot = ttk.Button(fctl, text="保存热力图", command=self._on_save_plot, state="disabled")
-        self.btn_savecfg = ttk.Button(fctl, text="保存配置", command=self._on_save_config)
-        self.btn_selftest = ttk.Button(fctl, text="自检", command=self._on_selftest, state="disabled")
-        for b in (self.btn_connect, self.btn_home, self.btn_start, self.btn_stop,
-                  self.btn_save, self.btn_saveplot, self.btn_savecfg, self.btn_selftest):
-            b.pack(side="left", padx=4)
+        fctl.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
+        fmove = ttk.Frame(fctl)
+        fmove.pack(side="left")
+        self.btn_connect = ttk.Button(fmove, text="连接", command=self._on_connect)
+        self.btn_home = ttk.Button(fmove, text="回零", command=self._on_home)
+        self.btn_start = ttk.Button(fmove, text="开始扫描", command=self._on_start)
+        self.btn_stop = ttk.Button(fmove, text="停止", command=self._on_stop, state="disabled")
+        self.btn_selftest = ttk.Button(fmove, text="自检", command=self._on_selftest, state="disabled")
+        for b in (self.btn_connect, self.btn_home, self.btn_start, self.btn_stop, self.btn_selftest):
+            b.pack(side="left", padx=3)
+        fdata = ttk.Frame(fctl)
+        fdata.pack(side="right")
+        self.btn_save = ttk.Button(fdata, text="保存CSV", command=self._on_save_csv, state="disabled")
+        self.btn_saveplot = ttk.Button(fdata, text="保存热力图", command=self._on_save_plot, state="disabled")
+        self.btn_savecfg = ttk.Button(fdata, text="保存配置", command=self._on_save_config)
+        for b in (self.btn_save, self.btn_saveplot, self.btn_savecfg):
+            b.pack(side="left", padx=3)
         self.btn_home.config(state="disabled")
         self.btn_start.config(state="disabled")
 
         # 4) 进度
         fprog = ttk.Frame(root)
-        fprog.grid(row=4, column=0, sticky="ew", padx=6, pady=2)
+        fprog.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6, pady=2)
         ttk.Label(fprog, textvariable=self.v["limits"]).pack(side="left", padx=(0, 16))
         ttk.Label(fprog, textvariable=self.v["status"]).pack(side="left")
         ttk.Progressbar(fprog, variable=self.v["progress"], maximum=100).pack(
@@ -275,7 +273,7 @@ class ScanApp:
 
         # 5) 实时位置与软限位 / 手动点动
         fpos = ttk.LabelFrame(root, text="实时位置与软限位 / 手动点动")
-        fpos.grid(row=5, column=0, sticky="ew", padx=6, pady=4)
+        fpos.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
         fpos.columnconfigure(3, weight=1)
         bg = root.cget("background")
         ttk.Label(fpos, text="X", width=2).grid(row=0, column=0, sticky="e", padx=(4, 2))
@@ -302,8 +300,8 @@ class ScanApp:
 
         # 6) 热力图 + 日志
         fbottom = ttk.Frame(root)
-        fbottom.grid(row=6, column=0, sticky="nsew", padx=6, pady=4)
-        root.rowconfigure(6, weight=1)
+        fbottom.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=6, pady=4)
+        root.rowconfigure(5, weight=1)
         fbottom.columnconfigure(0, weight=1)
         fbottom.rowconfigure(0, weight=1)
 
