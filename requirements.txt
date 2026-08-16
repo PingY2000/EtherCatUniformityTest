@@ -1,0 +1,11 @@
+# EtherCAT 主站 (SOEM 的 Python 绑定)
+# 注意: Windows 需另装 Npcap (https://npcap.com) 提供网卡驱动
+pysoem>=1.4.0
+
+# 可选: 仅保存热力图 (save_heatmap) 时需要
+# numpy
+# matplotlib
+
+# 可选: 功率计接入 (按实际设备二选一)
+# pyvisa      # USB/GPIB 功率计 (Thorlabs/Newport/Keysight 等, 需另装 NI-VISA)
+# pyserial    # 串口功率计

@@ -1,0 +1,120 @@
+# EtherCAT 双轴滑台扫描采集框架
+
+通过 EtherCAT 总线控制两台 **研控 YKD2205PE** 驱动器，驱动双轴滑台做二维扫描，
+在每点停留并采集**功率计**读数，输出 CSV 数据与热力图。
+
+- 语言: Python (pysoem，底层 SOEM)
+- 运动: CiA 402 **Profile Position (PP)** 逐点停测 (step & measure)
+- 功率计: 抽象接口 + 模拟占位实现 (设备尚未确定)
+
+## 目录结构
+
+```
+SOEM/
+├── YKD2205PE.pdf            # 驱动器手册
+├── requirements.txt
+├── README.md
+├── docs/
+│   └── ykd2205pe_ci402.md   # 对象字典/控制字速查
+├── ethercat_scan/           # 框架包
+│   ├── config.py            #   轴/扫描配置 (dataclass)
+│   ├── motion.py            #   轴抽象接口 + 模拟轴
+│   ├── drive.py             #   YKD2205PE 封装 (CiA 402 PP)
+│   ├── master.py            #   EtherCAT 主站封装 (pysoem)
+│   ├── power_meter.py       #   功率计接口 + 模拟/SCPI/串口
+│   ├── scanner.py           #   逐点停测扫描主循环
+│   └── gui.py               #   Tkinter 图形界面
+└── examples/
+    ├── run_scan.py          # 命令行入口
+    └── run_gui.py           # 图形界面入口
+```
+
+## 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+Windows 下 pysoem 依赖 **Npcap** 抓包驱动:
+1. 到 https://npcap.com 下载安装 Npcap (选 "WinPcap API-compatible Mode")。
+2. 若 pip 装 pysoem 失败 (无预编译 wheel)，建议用 Python 3.10~3.12 环境。
+
+功率计接入时再按需安装 (见下)。
+
+## 快速开始
+
+### 1) dry-run (无硬件跑通流程)
+
+```bash
+python examples/run_scan.py --dry-run --x-range 0 10 1 --y-range 0 10 1
+```
+
+用模拟轴 + 模拟高斯光斑功率计，验证整个扫描→采集→导出链路，生成
+`scan_result.csv` 和 `scan_result.png`。
+
+### 2) 真实硬件
+
+```bash
+python examples/run_scan.py \
+  --ifname "\\Device\\NPF_{GUID}" \
+  --x-alias 0 --y-alias 1 \
+  --x-ppmm 1000 --y-ppmm 1000 \
+  --x-range 0 10 0.5 --y-range 0 10 0.5 --dwell 0.1
+```
+
+- `--ifname`: EtherCAT 网卡名。用 Wireshark → 捕获 → 选项 里看到的
+  `\Device\NPF_{...}`，或 Npcap 网卡名。
+- `--x-alias` / `--y-alias`: 两台驱动器的**站号拨码** (0~63)。务必把两轴拨成
+  不同站号，例如 X=0、Y=1。
+- `--x-ppmm` / `--y-ppmm`: 每毫米脉冲数 (标定值，见下)。
+
+## 图形界面
+
+```bash
+python examples/run_gui.py
+```
+
+Tkinter 桌面界面，零额外依赖（热力图预览需 numpy+matplotlib，缺失时自动降级为纯日志）：
+
+- 面板填扫描范围/步长/停留时间，勾选「模拟运行」即可无硬件试跑
+- 「连接 → 回零/开始扫描 → 停止」，实时显示当前坐标、功率、进度条与热力图
+- 扫描在后台线程运行，界面不卡顿；完成后「保存CSV / 保存热力图」
+
+## 关键参数标定
+
+**脉冲/mm** 决定扫描坐标是否正确，由三样决定:
+
+```
+pulses_per_mm = 电机转一圈脉冲数 / 丝杠导程(mm)
+电机转一圈脉冲数 = 编码器线数 × 4 × 电子齿轮(2408h/2409h)
+```
+
+例: 丝杠导程 5mm、编码器 1000 线、4 细分、电子齿轮 1:1 →
+`1000*4/5 = 800 脉冲/mm`。先用 `--dry-run` 验证逻辑，再实测标定
+(让轴走固定距离、量实际位移反推)。
+
+## 接入真实功率计
+
+框架已留好 `PowerMeter` 抽象接口 (`ethercat_scan/power_meter.py`):
+
+- **USB/GPIB 仪器** (Thorlabs/Newport/Keysight): 用 `ScpiPowerMeter`，
+  填 `measure_cmd` 即可，需 `pip install pyvisa` + NI-VISA。
+- **串口仪器**: 用 `SerialPowerMeter`，需 `pip install pyserial`。
+
+把 `examples/run_scan.py` 里的 `SimulatedPowerMeter(...)` 换成你的实现即可，
+`Scanner` 只调用 `meter.measure()`。
+
+## 扫描流程
+
+1. `prepare()` — 两轴使能并切 PP 模式
+2. `home()` (可选 `--home`) — 回零，需接限位开关
+3. `scan()` — 逐点: 走到 (x,y) → 等待到位 → 停留 `dwell` → 采 `samples` 次功率取平均 → 记录
+4. `save_csv()` / `save_heatmap()` — 导出
+
+## 说明与注意
+
+- 本框架用 **SDO 控制** (不依赖周期 PDO)，简单可靠，适合逐点停测；默认不进 OP
+  (从站 TxPDO 默认为空)。若后续要**连续扫描/CSP 同步**，需映射 PDO 并跑周期
+  数据，可在 `drive.py`/`master.py` 基础上扩展。
+- 上电后若驱动器故障，`enable()` 会自动发 fault reset。
+- 回零方式 (6098h) 默认 17，需按你的限位开关接法在 `AxisConfig.home_method` 调整。
