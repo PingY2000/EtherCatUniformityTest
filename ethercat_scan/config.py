@@ -49,10 +49,10 @@ class ScanConfig:
     """逐点停测 (step & measure) 扫描配置。"""
 
     # 扫描范围 (mm)
-    x_start: float = 0.0
+    x_start: float = -10.0
     x_stop: float = 10.0
     x_step: float = 1.0
-    y_start: float = 0.0
+    y_start: float = -10.0
     y_stop: float = 10.0
     y_step: float = 1.0
 

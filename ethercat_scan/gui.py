@@ -41,6 +41,7 @@ class ScanApp:
         "x_min", "x_max", "y_min", "y_max",
         "x_start", "x_stop", "x_step", "y_start", "y_stop", "y_step",
         "dwell", "samples", "snake", "home",
+        "show_pos_on_map",
         "pm_use_real", "pm_resource", "pm_wavelength",
     ]
 
@@ -59,6 +60,8 @@ class ScanApp:
         self._cbar = None
         self._canvas = None
         self._z = None
+        self._target_marker = None   # 热力图上的目标位置标记 (空心圆)
+        self._pos_marker = None      # 热力图上的实际位置标记 (+)
 
         # 位置标尺相关
         self._ruler_x = None
@@ -72,6 +75,8 @@ class ScanApp:
         self.btn_selftest = None
 
         self._build_vars()
+        # 记录各控件出厂默认值，供"恢复默认设置"使用 (须在 _load_config 之前采集)
+        self._defaults = {k: v.get() for k, v in self.v.items()}
         self._build_ui()
         self._load_config()
         self._log("就绪。默认模拟运行(dry-run)；接真实硬件时取消勾选并填网卡名。")
@@ -86,8 +91,8 @@ class ScanApp:
             "dry_run": tk.BooleanVar(value=True),
             "x_alias": tk.StringVar(value="0"),
             "y_alias": tk.StringVar(value="1"),
-            "x_ppmm": tk.StringVar(value="1000"),
-            "y_ppmm": tk.StringVar(value="1000"),
+            "x_ppmm": tk.StringVar(value="200"),
+            "y_ppmm": tk.StringVar(value="200"),
             "x_reverse": tk.BooleanVar(value=False),
             "y_reverse": tk.BooleanVar(value=False),
             "x_home_method": tk.StringVar(value="17"),
@@ -96,16 +101,17 @@ class ScanApp:
             "x_max": tk.StringVar(value=""),
             "y_min": tk.StringVar(value=""),
             "y_max": tk.StringVar(value=""),
-            "x_start": tk.StringVar(value="0"),
+            "x_start": tk.StringVar(value="-10"),
             "x_stop": tk.StringVar(value="10"),
             "x_step": tk.StringVar(value="1"),
-            "y_start": tk.StringVar(value="0"),
+            "y_start": tk.StringVar(value="-10"),
             "y_stop": tk.StringVar(value="10"),
             "y_step": tk.StringVar(value="1"),
             "dwell": tk.StringVar(value="0.1"),
             "samples": tk.StringVar(value="1"),
             "snake": tk.BooleanVar(value=True),
             "home": tk.BooleanVar(value=False),
+            "show_pos_on_map": tk.BooleanVar(value=False),
             "pm_use_real": tk.BooleanVar(value=False),
             "pm_resource": tk.StringVar(value=""),
             "pm_wavelength": tk.StringVar(value=""),
@@ -115,8 +121,8 @@ class ScanApp:
             "pos": tk.StringVar(value="X: 0.000 mm   Y: 0.000 mm"),
             "pos_x": tk.StringVar(value="X: 0.000 mm"),
             "pos_y": tk.StringVar(value="Y: 0.000 mm"),
-            "range_x": tk.StringVar(value="软限位: —"),
-            "range_y": tk.StringVar(value="软限位: —"),
+            "range_x": tk.StringVar(value="未设置"),
+            "range_y": tk.StringVar(value="未设置"),
             "limits": tk.StringVar(value="限位: —"),
         }
         self.v = v
@@ -175,11 +181,28 @@ class ScanApp:
     def _on_save_config(self):
         self._save_config()
 
+    def _on_reset_config(self):
+        """恢复默认设置：重置所有配置项为出厂默认值，并清除已保存的配置文件。"""
+        if not messagebox.askyesno(
+                "恢复默认设置",
+                "确定将所有设置恢复为默认值并清除已保存的配置文件吗？"):
+            return
+        for k in self._CONFIG_KEYS:
+            self.v[k].set(self._defaults[k])
+        try:
+            path = self._config_path()
+            if path.exists():
+                path.unlink()
+                self._log(f"已清除配置文件: {path}")
+        except Exception as e:
+            self._log(f"[错误] 清除配置文件失败: {e}")
+        self._log("已恢复默认设置")
+
     # ---------------- UI ----------------
     def _build_ui(self):
         root = self.root
         root.title("EtherCAT 双轴滑台扫描采集")
-        root.geometry("980x840")
+        root.geometry("1100x840")
         root.columnconfigure(0, weight=1)
         root.columnconfigure(1, weight=1)
 
@@ -240,6 +263,8 @@ class ScanApp:
         ttk.Entry(fsc, textvariable=self.v["samples"], width=7).grid(row=1, column=5, sticky="w", padx=2)
         ttk.Checkbutton(fsc, text="扫描前回零", variable=self.v["home"]).grid(row=3, column=0, columnspan=2, sticky="w", padx=2)
         ttk.Checkbutton(fsc, text="蛇形", variable=self.v["snake"]).grid(row=3, column=2, columnspan=2, sticky="w", padx=2)
+        ttk.Checkbutton(fsc, text="热力图显示位置标记", variable=self.v["show_pos_on_map"]).grid(
+            row=4, column=0, columnspan=4, sticky="w", padx=2)
 
         # 3) 控制按钮 (运动控制 左 / 数据 右)
         fctl = ttk.Frame(root)
@@ -258,7 +283,8 @@ class ScanApp:
         self.btn_save = ttk.Button(fdata, text="保存CSV", command=self._on_save_csv, state="disabled")
         self.btn_saveplot = ttk.Button(fdata, text="保存热力图", command=self._on_save_plot, state="disabled")
         self.btn_savecfg = ttk.Button(fdata, text="保存配置", command=self._on_save_config)
-        for b in (self.btn_save, self.btn_saveplot, self.btn_savecfg):
+        self.btn_resetcfg = ttk.Button(fdata, text="恢复默认", command=self._on_reset_config)
+        for b in (self.btn_save, self.btn_saveplot, self.btn_savecfg, self.btn_resetcfg):
             b.pack(side="left", padx=3)
         self.btn_home.config(state="disabled")
         self.btn_start.config(state="disabled")
@@ -271,37 +297,50 @@ class ScanApp:
         ttk.Progressbar(fprog, variable=self.v["progress"], maximum=100).pack(
             side="right", fill="x", expand=True, padx=8)
 
-        # 5) 实时位置与软限位 / 手动点动
-        fpos = ttk.LabelFrame(root, text="实时位置与软限位 / 手动点动")
-        fpos.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6, pady=4)
-        fpos.columnconfigure(3, weight=1)
+        # 5) 实时位置与软限位 / 手动点动 (左，紧凑) + 热力图/日志 (右，占满) 同一行
+        frow = ttk.Frame(root)
+        frow.grid(row=4, column=0, columnspan=2, sticky="nsew", padx=6, pady=4)
+        root.rowconfigure(4, weight=1)
+        frow.columnconfigure(0, weight=0)   # 左列按内容宽度，保持紧凑
+        frow.columnconfigure(1, weight=1)   # 右列(热力图+日志)占满剩余宽度
+        frow.rowconfigure(0, weight=1)
+
+        fpos = ttk.LabelFrame(frow, text="实时位置与软限位 / 手动点动")
+        fpos.grid(row=0, column=0, sticky="nsw", padx=(0, 6))
+        fpos.columnconfigure(1, weight=1)   # 位置/软限位列占满，点动按钮靠右
         bg = root.cget("background")
-        ttk.Label(fpos, text="X", width=2).grid(row=0, column=0, sticky="e", padx=(4, 2))
+
+        # X 轴: 名称 + 位置 + 点动按钮一行，软限位与标尺在其下方 (纵向布局，适合窄列)
+        ttk.Label(fpos, text="X", width=2).grid(row=0, column=0, sticky="w", padx=(4, 2))
         ttk.Label(fpos, textvariable=self.v["pos_x"], width=13).grid(row=0, column=1, sticky="w", padx=2)
-        ttk.Label(fpos, textvariable=self.v["range_x"], width=22).grid(row=0, column=2, sticky="w", padx=2)
-        self._ruler_x = tk.Canvas(fpos, height=26, highlightthickness=0, bg=bg)
-        self._ruler_x.grid(row=0, column=3, sticky="ew", padx=(4, 8))
-        btn_xn = ttk.Button(fpos, text="-X", width=5, command=lambda: self._on_jog("X", -1))
-        btn_xn.grid(row=0, column=4, padx=2)
-        btn_xp = ttk.Button(fpos, text="+X", width=5, command=lambda: self._on_jog("X", +1))
-        btn_xp.grid(row=0, column=5, padx=2)
-        ttk.Label(fpos, text="Y", width=2).grid(row=1, column=0, sticky="e", padx=(4, 2))
-        ttk.Label(fpos, textvariable=self.v["pos_y"], width=13).grid(row=1, column=1, sticky="w", padx=2)
-        ttk.Label(fpos, textvariable=self.v["range_y"], width=22).grid(row=1, column=2, sticky="w", padx=2)
-        self._ruler_y = tk.Canvas(fpos, height=26, highlightthickness=0, bg=bg)
-        self._ruler_y.grid(row=1, column=3, sticky="ew", padx=(4, 8))
-        btn_yn = ttk.Button(fpos, text="-Y", width=5, command=lambda: self._on_jog("Y", -1))
-        btn_yn.grid(row=1, column=4, padx=2)
-        btn_yp = ttk.Button(fpos, text="+Y", width=5, command=lambda: self._on_jog("Y", +1))
-        btn_yp.grid(row=1, column=5, padx=2)
+        btn_xn = ttk.Button(fpos, text="-", width=3, command=lambda: self._on_jog("X", -1))
+        btn_xn.grid(row=0, column=2, padx=(2, 1))
+        btn_xp = ttk.Button(fpos, text="+", width=3, command=lambda: self._on_jog("X", +1))
+        btn_xp.grid(row=0, column=3, padx=(1, 4))
+        ttk.Label(fpos, textvariable=self.v["range_x"]).grid(row=1, column=1, sticky="w", padx=2)
+        self._ruler_x = tk.Canvas(fpos, width=100, height=26, highlightthickness=0, bg=bg)
+        self._ruler_x.grid(row=2, column=0, columnspan=4, sticky="ew", padx=(4, 6))
+
+        # Y 轴 (同 X)
+        ttk.Label(fpos, text="Y", width=2).grid(row=3, column=0, sticky="w", padx=(4, 2))
+        ttk.Label(fpos, textvariable=self.v["pos_y"], width=13).grid(row=3, column=1, sticky="w", padx=2)
+        btn_yn = ttk.Button(fpos, text="-", width=3, command=lambda: self._on_jog("Y", -1))
+        btn_yn.grid(row=3, column=2, padx=(2, 1))
+        btn_yp = ttk.Button(fpos, text="+", width=3, command=lambda: self._on_jog("Y", +1))
+        btn_yp.grid(row=3, column=3, padx=(1, 4))
+        ttk.Label(fpos, textvariable=self.v["range_y"]).grid(row=4, column=1, sticky="w", padx=2)
+        self._ruler_y = tk.Canvas(fpos, width=100, height=26, highlightthickness=0, bg=bg)
+        self._ruler_y.grid(row=5, column=0, columnspan=4, sticky="ew", padx=(4, 6))
         self._jog_buttons = [btn_xn, btn_xp, btn_yn, btn_yp]
-        ttk.Label(fpos, text="点动步长(mm)").grid(row=2, column=1, sticky="e", padx=2)
-        ttk.Entry(fpos, textvariable=self.v["jog_step"], width=8).grid(row=2, column=2, sticky="w", padx=2)
+
+        # 点动步长
+        ttk.Label(fpos, text="点动步长(mm)").grid(row=6, column=1, sticky="e", padx=2)
+        ttk.Entry(fpos, textvariable=self.v["jog_step"], width=8).grid(
+            row=6, column=2, columnspan=2, sticky="w", padx=2)
 
         # 6) 热力图 + 日志
-        fbottom = ttk.Frame(root)
-        fbottom.grid(row=5, column=0, columnspan=2, sticky="nsew", padx=6, pady=4)
-        root.rowconfigure(5, weight=1)
+        fbottom = ttk.Frame(frow)
+        fbottom.grid(row=0, column=1, sticky="nsew")
         fbottom.columnconfigure(0, weight=1)
         fbottom.rowconfigure(0, weight=1)
 
@@ -375,15 +414,28 @@ class ScanApp:
         self._draw_rulers()
 
     def _refresh_pos(self):
-        """空闲时读取两轴实际位置与限位状态 (扫描中由 point 事件显示目标坐标，避免争用总线)。"""
+        """读取两轴实际位置与限位状态。
+
+        空闲时刷新位置/限位/热力图标记；扫描中默认只显示 point 事件的目标坐标，
+        避免争用总线，仅当"热力图显示位置标记"开启时才在扫描中读实际位置。
+        """
         sc = self.scanner
-        if sc is None or self._state != "idle":
+        if sc is None:
             return
-        try:
-            self._set_pos(self._axis_mm(sc.x), self._axis_mm(sc.y))
-            self._set_limits(sc.x, sc.y)
-        except Exception:
-            pass
+        if self._state == "idle":
+            try:
+                pos = (self._axis_mm(sc.x), self._axis_mm(sc.y))
+                self._set_pos(*pos)
+                self._set_limits(sc.x, sc.y)
+                self._update_map_markers(actual=pos)
+            except Exception:
+                pass
+        elif self._state == "scanning" and self.v["show_pos_on_map"].get():
+            try:
+                pos = (self._axis_mm(sc.x), self._axis_mm(sc.y))
+                self._update_map_markers(actual=pos)
+            except Exception:
+                pass
 
     def _set_limits(self, x_ax, y_ax):
         def _fmt(ax):
@@ -402,9 +454,9 @@ class ScanApp:
         self._y_range = sc.y.soft_limits if sc is not None else None
         for key, rng in (("range_x", self._x_range), ("range_y", self._y_range)):
             if rng and rng[0] is not None and rng[1] is not None:
-                self.v[key].set(f"软限位: {rng[0]:g} ~ {rng[1]:g} mm")
+                self.v[key].set(f"{rng[0]:g} ~ {rng[1]:g} mm")   # 框体标题已含"软限位"，这里不重复前缀，保持窄列
             else:
-                self.v[key].set("软限位: 未设置")
+                self.v[key].set("未设置")
         self._draw_rulers()
 
     def _draw_rulers(self):
@@ -463,10 +515,10 @@ class ScanApp:
             "x_max": self._opt_num("x_max"),
             "y_min": self._opt_num("y_min"),
             "y_max": self._opt_num("y_max"),
-            "x_start": self._num("x_start", 0.0),
+            "x_start": self._num("x_start", -10.0),
             "x_stop": self._num("x_stop", 10.0),
             "x_step": self._num("x_step", 1.0),
-            "y_start": self._num("y_start", 0.0),
+            "y_start": self._num("y_start", -10.0),
             "y_stop": self._num("y_stop", 10.0),
             "y_step": self._num("y_step", 1.0),
             "dwell": self._num("dwell", 0.1),
@@ -740,6 +792,8 @@ class ScanApp:
             return
         self._z = None
         self._im = None
+        self._target_marker = None
+        self._pos_marker = None
         self._ax.clear()
         self._ax.set_xlabel("X (mm)")
         self._ax.set_ylabel("Y (mm)")
@@ -763,6 +817,13 @@ class ScanApp:
         self._im = self._ax.imshow(
             self._z, origin="lower", aspect="equal", cmap="inferno",
             extent=[cfg.x_start, cfg.x_stop, cfg.y_start, cfg.y_stop])
+        self._target_marker = self._ax.plot(
+            [], [], marker="o", ms=9, mfc="none", mec="#1f6feb", mew=1.5,
+            ls="none", label="目标位置")[0]
+        self._pos_marker = self._ax.plot(
+            [], [], marker="+", ms=12, mec="#d1242f", mew=2,
+            ls="none", label="当前位置")[0]
+        self._ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
         self._ax.set_xlabel("X (mm)")
         self._ax.set_ylabel("Y (mm)")
         self._ax.set_title("Power map (实时)")
@@ -788,6 +849,27 @@ class ScanApp:
         self._im.set_data(self._z)
         self._canvas.draw_idle()
 
+    def _update_map_markers(self, target=None, actual=None):
+        """在热力图上叠加目标/实际位置标记 (由 show_pos_on_map 选项控制显隐)。
+
+        target: 当前目标位置 (mm)；actual: 当前实际位置 (mm)。
+        """
+        if not HAVE_MPL or self._canvas is None or self._ax is None:
+            return
+        show = self.v["show_pos_on_map"].get()
+        if self._target_marker is not None:
+            if target is not None:
+                self._target_marker.set_data([target[0]], [target[1]])
+            self._target_marker.set_visible(show)
+        if self._pos_marker is not None:
+            if actual is not None:
+                self._pos_marker.set_data([actual[0]], [actual[1]])
+            self._pos_marker.set_visible(show)
+        leg = self._ax.get_legend()
+        if leg is not None:
+            leg.set_visible(show)
+        self._canvas.draw_idle()
+
     # ---------------- 事件循环 ----------------
     def _poll(self):
         try:
@@ -807,6 +889,7 @@ class ScanApp:
             self.v["status"].set(f"点 {i + 1}/{total}  ({x:.3f},{y:.3f})  {p:.6f} W")
             self._set_pos(x, y)
             self._update_heatmap(x, y, p)
+            self._update_map_markers(target=(x, y))
         elif kind == "connected":
             self._log("已连接")
             self.v["status"].set("已连接")
