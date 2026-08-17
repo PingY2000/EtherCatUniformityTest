@@ -785,19 +785,39 @@ class ScanApp:
 
     def _run_selftest(self):
         from .selftest import run_axis_selftest
+        results = []
         try:
             for ax in (self.scanner.x, self.scanner.y):
-                self.events.put(("log", f"自检 {ax.name} 轴: 回零 → 负限位 → 正限位 ..."))
+                self.events.put(("log", f"自检 {ax.name} 轴: 左限位 → 右限位 → 回零 ..."))
                 res = run_axis_selftest(ax, should_stop=lambda: self.scanner._aborted)
                 mark = "通过" if res.ok else "异常"
                 self.events.put(("log", f"{ax.name} 轴自检[{mark}]: {res.detail}"))
-            self.events.put(("selftest_done", None))
+                results.append(res)
+            self.events.put(("selftest_done", results))
         except Exception as e:
             if self.scanner._aborted:
                 self.events.put(("log", "自检已中止"))
                 self.events.put(("idle", None))
             else:
                 self.events.put(("error", str(e)))
+
+    def _show_selftest_result(self, results):
+        """自检完成后弹出左右限位位置，供设置软限位参考。"""
+        lines = []
+        for res in results:
+            if res.neg_pos_mm is not None and res.pos_pos_mm is not None:
+                lines.append(
+                    f"{res.name} 轴\n"
+                    f"  左限位位置: {res.neg_pos_mm:+.3f} mm\n"
+                    f"  右限位位置: {res.pos_pos_mm:+.3f} mm\n"
+                    f"  行程: {res.span_mm:.3f} mm")
+            else:
+                lines.append(f"{res.name} 轴\n  左右限位位置未获取 (自检异常)")
+        messagebox.showinfo(
+            "自检结果 (软限位参考)",
+            "\n\n".join(lines) +
+            "\n\n请据此在「回零与限位」中填写软限位，并保留安全余量。\n"
+            "(若自检前未先回零，位置以自检起点为参考；建议先「回零」再自检。)")
 
     def _on_save_csv(self):
         if self.scanner is None or not self.scanner.result:
@@ -994,6 +1014,7 @@ class ScanApp:
             self.v["status"].set("自检完成")
             self._set_state("idle")
             self._refresh_pos()
+            self._show_selftest_result(payload)
         elif kind == "error":
             self._log(f"[错误] {payload}")
             self.v["status"].set("出错")
