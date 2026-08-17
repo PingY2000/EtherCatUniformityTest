@@ -69,6 +69,7 @@ class ScanApp:
         self._x_range = None
         self._y_range = None
         self._cur_pos = (0.0, 0.0)
+        self._target_pos = (0.0, 0.0)   # 目标位置 (位置同步: 点动/扫描命令的都是它)
 
         # 手动点动 / 自检
         self._jog_buttons = []
@@ -79,6 +80,9 @@ class ScanApp:
         self._defaults = {k: v.get() for k, v in self.v.items()}
         self._build_ui()
         self._load_config()
+        # 扫描参数变化时刷新默认热力图；位置标记开关变化时立即显隐
+        self._bind_config_traces()
+        self._init_heatmap()
         self._log("就绪。默认模拟运行(dry-run)；接真实硬件时取消勾选并填网卡名。")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(50, self._poll)
@@ -111,7 +115,7 @@ class ScanApp:
             "samples": tk.StringVar(value="1"),
             "snake": tk.BooleanVar(value=True),
             "home": tk.BooleanVar(value=False),
-            "show_pos_on_map": tk.BooleanVar(value=False),
+            "show_pos_on_map": tk.BooleanVar(value=True),
             "pm_use_real": tk.BooleanVar(value=False),
             "pm_resource": tk.StringVar(value=""),
             "pm_wavelength": tk.StringVar(value=""),
@@ -347,11 +351,7 @@ class ScanApp:
         if HAVE_MPL:
             self._fig = Figure(figsize=(5, 4), dpi=100)
             self._ax = self._fig.add_subplot(111)
-            self._im = self._ax.imshow([[0.0]], origin="lower", aspect="equal", cmap="inferno")
-            self._cbar = self._fig.colorbar(self._im, ax=self._ax)
-            self._ax.set_xlabel("X (mm)")
-            self._ax.set_ylabel("Y (mm)")
-            self._ax.set_title("Power map")
+            # imshow/色标由 _init_heatmap 只创建一次，之后复用，保证色标大小稳定
             self._canvas = FigureCanvasTkAgg(self._fig, master=fbottom)
             self._canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         else:
@@ -426,8 +426,9 @@ class ScanApp:
             try:
                 pos = (self._axis_mm(sc.x), self._axis_mm(sc.y))
                 self._set_pos(*pos)
+                self._target_pos = pos   # 位置同步: 空闲时目标位置跟随实际位置
                 self._set_limits(sc.x, sc.y)
-                self._update_map_markers(actual=pos)
+                self._update_map_markers(target=self._target_pos, actual=pos)
             except Exception:
                 pass
         elif self._state == "scanning" and self.v["show_pos_on_map"].get():
@@ -604,6 +605,7 @@ class ScanApp:
         self.v["progress"].set(0.0)
         self._x_range = self._y_range = None
         self._cur_pos = (0.0, 0.0)
+        self._target_pos = (0.0, 0.0)
         self._update_ranges()
         self._clear_heatmap()
         self._log("已断开")
@@ -717,18 +719,27 @@ class ScanApp:
         if step_mm <= 0:
             messagebox.showwarning("提示", "点动步长需为正数")
             return
-        ax = self.scanner.x if ax_name == "X" else self.scanner.y
+        # 手动点动同样建立在位置同步上: 更新的是目标位置，再绝对定位过去
+        tx, ty = self._target_pos
+        if ax_name == "X":
+            tx += direction * step_mm
+        else:
+            ty += direction * step_mm
+        self._target_pos = (tx, ty)
+        self._update_map_markers(target=self._target_pos)
         self._set_state("jog")
         self.v["status"].set(f"{ax_name} 轴点动 {direction * step_mm:+.3f} mm ...")
-        threading.Thread(target=self._run_jog, args=(ax, direction, step_mm), daemon=True).start()
+        ax = self.scanner.x if ax_name == "X" else self.scanner.y
+        target_mm = tx if ax_name == "X" else ty
+        threading.Thread(target=self._run_jog, args=(ax, target_mm), daemon=True).start()
 
-    def _run_jog(self, ax, direction: int, step_mm: float):
+    def _run_jog(self, ax, target_mm: float):
         try:
             if hasattr(ax, "setup_pp"):
                 ax.setup_pp()
             ax.enable()
-            delta_pul = int(round(direction * step_mm * ax.pulses_per_mm * ax.direction))
-            ax.move_rel(delta_pul)
+            target_pul = int(round(target_mm * ax.pulses_per_mm * ax.direction))
+            ax.move_abs(target_pul)
             ax.wait_target_reached(10.0)
             self.events.put(("idle", None))
         except Exception as e:
@@ -786,61 +797,106 @@ class ScanApp:
             self._log(f"已保存 {path}")
 
     # ---------------- 热力图 ----------------
+    def _scan_rect(self):
+        """从界面扫描参数读取区域 (start/stop/step)；无效 (步长<=0) 时返回 None。"""
+        xs = self._num("x_step", 1.0)
+        ys = self._num("y_step", 1.0)
+        if xs <= 0 or ys <= 0:
+            return None
+        return (self._num("x_start", 0.0), self._num("x_stop", 0.0), xs,
+                self._num("y_start", 0.0), self._num("y_stop", 0.0), ys)
+
+    def _bind_config_traces(self):
+        """扫描参数变化时刷新默认热力图；位置标记开关变化时立即显隐。"""
+        for k in ("x_start", "x_stop", "x_step", "y_start", "y_stop", "y_step"):
+            self.v[k].trace_add("write", lambda *_: self._init_heatmap())
+        self.v["show_pos_on_map"].trace_add(
+            "write", lambda *_: self._update_map_markers())
+
     def _clear_heatmap(self):
-        """清空热力图显示 (断开/重置时)。"""
-        if not HAVE_MPL:
-            return
+        """清空热力图数据并恢复为默认图表 (断开/重置时)。"""
         self._z = None
-        self._im = None
-        self._target_marker = None
-        self._pos_marker = None
-        self._ax.clear()
-        self._ax.set_xlabel("X (mm)")
-        self._ax.set_ylabel("Y (mm)")
-        self._ax.set_title("Power map")
-        if self._cbar is not None:
-            try:
-                self._cbar.remove()
-            except Exception:
-                pass
-        self._cbar = None
-        self._canvas.draw_idle()
+        self._heat_cfg = None
+        self._init_heatmap()
 
     def _init_heatmap(self):
-        if not HAVE_MPL or self.scanner is None:
+        """根据当前扫描起点/终点建立默认热力图图表。
+
+        作为常驻默认图表，范围直接由扫描参数决定，可在连接前后、参数变化时
+        反复调用更新；不依赖 scanner 是否已创建。
+        imshow/色标/图例只创建一次，之后仅更新数据与范围——保证色标大小不变、
+        图表不会被反复重排而缩小。
+        """
+        if not HAVE_MPL or self._canvas is None or self._state == "scanning":
             return
-        cfg = self.scanner.cfg
-        nx = int(round((cfg.x_stop - cfg.x_start) / cfg.x_step)) + 1
-        ny = int(round((cfg.y_stop - cfg.y_start) / cfg.y_step)) + 1
+        rect = self._scan_rect()
+        if rect is None:
+            self._z = None
+            self._heat_cfg = None
+            self._im = None
+            self._target_marker = None
+            self._pos_marker = None
+            self._ax.clear()
+            self._ax.text(0.5, 0.5, "扫描步长无效，无法显示热力图",
+                          ha="center", va="center", transform=self._ax.transAxes)
+            if self._cbar is not None:
+                try:
+                    self._cbar.remove()
+                except Exception:
+                    pass
+            self._cbar = None
+            self._canvas.draw_idle()
+            return
+        x0, x1, xs, y0, y1, ys = rect
+        nx = max(1, int(round((x1 - x0) / xs)) + 1)
+        ny = max(1, int(round((y1 - y0) / ys)) + 1)
+        # imshow 的 extent 是图像边界；要让采样点落在色块中心，
+        # 各边外扩半个步长 (start - step/2 ~ stop + step/2)
+        extent = [x0 - xs / 2, x1 + xs / 2, y0 - ys / 2, y1 + ys / 2]
+        self._heat_cfg = rect
         self._z = np.full((ny, nx), np.nan)
-        self._ax.clear()
-        self._im = self._ax.imshow(
-            self._z, origin="lower", aspect="equal", cmap="inferno",
-            extent=[cfg.x_start, cfg.x_stop, cfg.y_start, cfg.y_stop])
-        self._target_marker = self._ax.plot(
-            [], [], marker="o", ms=9, mfc="none", mec="#1f6feb", mew=1.5,
-            ls="none", label="目标位置")[0]
-        self._pos_marker = self._ax.plot(
-            [], [], marker="+", ms=12, mec="#d1242f", mew=2,
-            ls="none", label="当前位置")[0]
-        self._ax.legend(loc="upper right", fontsize=8, framealpha=0.6)
-        self._ax.set_xlabel("X (mm)")
-        self._ax.set_ylabel("Y (mm)")
-        self._ax.set_title("Power map (实时)")
-        if self._cbar is not None:
-            try:
-                self._cbar.remove()
-            except Exception:
-                pass
-        self._cbar = self._fig.colorbar(self._im, ax=self._ax)
+        if self._im is None:
+            # 首次 (或从"步长无效"恢复): 建图 + 色标 + 图例，之后一直复用
+            self._ax.clear()
+            self._im = self._ax.imshow(
+                self._z, origin="lower", aspect="equal", cmap="inferno",
+                extent=extent)
+            self._target_marker = self._ax.plot(
+                [], [], marker="o", ms=9, mfc="none", mec="#1f6feb", mew=1.5,
+                ls="none", label="目标位置")[0]
+            self._pos_marker = self._ax.plot(
+                [], [], marker="+", ms=12, mec="#d1242f", mew=2,
+                ls="none", label="当前位置")[0]
+            # 图例必须在标记可见时创建，否则图例只渲染文字、不渲染图标；
+            # 放图表右上角外侧 (标题左移避免重叠)
+            leg = self._ax.legend(loc="lower right", bbox_to_anchor=(1.0, 1.03),
+                                  ncol=2, fontsize=8, framealpha=0.6)
+            self._ax.set_xlabel("X (mm)")
+            self._ax.set_ylabel("Y (mm)")
+            self._ax.set_title("Power map", loc="left")
+            self._cbar = self._fig.colorbar(self._im, ax=self._ax)
+        else:
+            # 复用已有 imshow/色标: 只更新数据与范围，不重建色标
+            ax_pos = self._ax.get_position()
+            cb_pos = self._cbar.ax.get_position()
+            gap = cb_pos.x0 - ax_pos.x1   # 色标与主轴右侧的间距 (figure 比例, 恒定)
+            self._im.set_data(self._z)
+            self._im.set_extent(extent)
+            # aspect='equal' + 新范围会让主轴重排，让色标跟随主轴对齐
+            new_ax = self._ax.get_position()
+            self._cbar.ax.set_position([new_ax.x1 + gap, new_ax.y0,
+                                        cb_pos.width, new_ax.height])
+        # 位置标记与图例的显隐始终交给 _update_map_markers (遵循 show_pos_on_map)，
+        # 使标记在初始/参数变化/断开后都按默认显示，而不是开始扫描才有
+        self._update_map_markers(target=self._target_pos, actual=self._cur_pos)
         self._canvas.draw_idle()
 
     def _update_heatmap(self, x, y, p):
-        if not HAVE_MPL or self._z is None or self.scanner is None:
+        if not HAVE_MPL or self._z is None or self._heat_cfg is None:
             return
-        cfg = self.scanner.cfg
-        xi = int(round((x - cfg.x_start) / cfg.x_step))
-        yi = int(round((y - cfg.y_start) / cfg.y_step))
+        x0, x1, xs, y0, y1, ys = self._heat_cfg
+        xi = int(round((x - x0) / xs))
+        yi = int(round((y - y0) / ys))
         if 0 <= yi < self._z.shape[0] and 0 <= xi < self._z.shape[1]:
             self._z[yi, xi] = p
         finite = self._z[np.isfinite(self._z)]
@@ -852,6 +908,7 @@ class ScanApp:
     def _update_map_markers(self, target=None, actual=None):
         """在热力图上叠加目标/实际位置标记 (由 show_pos_on_map 选项控制显隐)。
 
+        只要连接并处于空闲/点动/扫描，就持续刷新，而不是开始扫描才有标记。
         target: 当前目标位置 (mm)；actual: 当前实际位置 (mm)。
         """
         if not HAVE_MPL or self._canvas is None or self._ax is None:
@@ -888,8 +945,9 @@ class ScanApp:
             self.v["progress"].set((i + 1) / total * 100 if total else 0)
             self.v["status"].set(f"点 {i + 1}/{total}  ({x:.3f},{y:.3f})  {p:.6f} W")
             self._set_pos(x, y)
+            self._target_pos = (x, y)
             self._update_heatmap(x, y, p)
-            self._update_map_markers(target=(x, y))
+            self._update_map_markers(target=self._target_pos)
         elif kind == "connected":
             self._log("已连接")
             self.v["status"].set("已连接")

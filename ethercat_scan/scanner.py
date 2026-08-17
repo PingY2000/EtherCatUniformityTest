@@ -169,7 +169,10 @@ class Scanner:
 
         z = np.reshape(np.array(self.result.power), (ny, nx))
         plt.figure()
-        plt.imshow(z, extent=[cfg.x_start, cfg.x_stop, cfg.y_start, cfg.y_stop],
+        # extent 各边外扩半个步长，使采样点落在色块中心 (与 GUI 热力图一致)
+        plt.imshow(z,
+                   extent=[cfg.x_start - cfg.x_step / 2, cfg.x_stop + cfg.x_step / 2,
+                           cfg.y_start - cfg.y_step / 2, cfg.y_stop + cfg.y_step / 2],
                    origin="lower", aspect="auto", cmap="inferno")
         plt.colorbar(label="Power (W)")
         plt.xlabel("X (mm)")
