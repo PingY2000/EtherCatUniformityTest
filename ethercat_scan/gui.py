@@ -79,6 +79,8 @@ class ScanApp:
         # 记录各控件出厂默认值，供"恢复默认设置"使用 (须在 _load_config 之前采集)
         self._defaults = {k: v.get() for k, v in self.v.items()}
         self._build_ui()
+        # 参数控件各自的启用态 (Combobox=readonly，其余=normal)，锁定后据此恢复
+        self._param_states = {id(w): w.cget("state") for w in self._param_widgets()}
         self._load_config()
         # 扫描参数变化时刷新默认热力图；位置标记开关变化时立即显隐
         self._bind_config_traces()
@@ -211,7 +213,7 @@ class ScanApp:
         root.columnconfigure(1, weight=1)
 
         # 1) 硬件连接 (左) + 功率计 (右)
-        fhw = ttk.LabelFrame(root, text="硬件连接")
+        fhw = self._fhw = ttk.LabelFrame(root, text="硬件连接")
         fhw.grid(row=0, column=0, sticky="ew", padx=(6, 3), pady=4)
         ttk.Checkbutton(fhw, text="模拟运行 (dry-run)", variable=self.v["dry_run"]).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=4)
@@ -229,7 +231,7 @@ class ScanApp:
         ttk.Checkbutton(fhw, text="X 反向", variable=self.v["x_reverse"]).grid(row=4, column=1, sticky="w", padx=2)
         ttk.Checkbutton(fhw, text="Y 反向", variable=self.v["y_reverse"]).grid(row=4, column=3, sticky="w", padx=2)
 
-        fpm = ttk.LabelFrame(root, text="功率计 (PM100USB + PD300R)")
+        fpm = self._fpm = ttk.LabelFrame(root, text="功率计 (PM100USB + PD300R)")
         fpm.grid(row=0, column=1, sticky="ew", padx=(3, 6), pady=4)
         ttk.Checkbutton(fpm, text="真实功率计 (PM100USB)", variable=self.v["pm_use_real"]).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=4)
@@ -241,7 +243,7 @@ class ScanApp:
             row=3, column=0, columnspan=2, sticky="w", padx=4)
 
         # 2) 回零与限位 (左) + 扫描参数 (右)
-        fhl = ttk.LabelFrame(root, text="回零与限位 (mm，相对原点)")
+        fhl = self._fhl = ttk.LabelFrame(root, text="回零与限位 (mm，相对原点)")
         fhl.grid(row=1, column=0, sticky="ew", padx=(6, 3), pady=4)
         for r, name in enumerate(["X", "Y"]):
             k = name.lower()
@@ -254,7 +256,7 @@ class ScanApp:
             ttk.Label(fhl, text="~").grid(row=r, column=4, sticky="w")
             ttk.Entry(fhl, textvariable=self.v[f"{k}_max"], width=7).grid(row=r, column=5, sticky="w", padx=2)
 
-        fsc = ttk.LabelFrame(root, text="扫描参数 (mm)")
+        fsc = self._fsc = ttk.LabelFrame(root, text="扫描参数 (mm)")
         fsc.grid(row=1, column=1, sticky="ew", padx=(3, 6), pady=4)
         for r, (key, lbl) in enumerate([("start", "起点"), ("stop", "终点"), ("step", "步长")]):
             self._lbl(fsc, f"X {lbl}", r, 0)
@@ -339,8 +341,8 @@ class ScanApp:
 
         # 点动步长
         ttk.Label(fpos, text="点动步长(mm)").grid(row=6, column=1, sticky="e", padx=2)
-        ttk.Entry(fpos, textvariable=self.v["jog_step"], width=8).grid(
-            row=6, column=2, columnspan=2, sticky="w", padx=2)
+        self._jog_step_entry = ttk.Entry(fpos, textvariable=self.v["jog_step"], width=8)
+        self._jog_step_entry.grid(row=6, column=2, columnspan=2, sticky="w", padx=2)
 
         # 6) 热力图 + 日志
         fbottom = ttk.Frame(frow)
@@ -372,13 +374,34 @@ class ScanApp:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    def _param_widgets(self):
+        """返回可编辑的参数控件 (Entry/Checkbutton/Combobox/Spinbox)。
+
+        硬件连接/功率计/回零限位/扫描参数四个区 + 点动步长输入框。
+        """
+        out = []
+        for f in (self._fhw, self._fpm, self._fhl, self._fsc):
+            for w in f.winfo_children():
+                if w.winfo_class() in ("TEntry", "TCheckbutton", "TCombobox", "TSpinbox"):
+                    out.append(w)
+        out.append(self._jog_step_entry)
+        return out
+
+    def _update_param_lock(self):
+        """非空闲状态 (扫描/回零/点动/连接中) 锁定参数控件，防止中途修改。"""
+        locked = self._state != "idle"
+        for w in self._param_widgets():
+            w.config(state="disabled" if locked else self._param_states[id(w)])
+
     def _update_buttons(self):
         """集中管理按钮互锁 (单一状态源)。
 
         依据 self._state ∈ {idle, connecting, homing, jog, scanning, selftest} /
         是否已连接 / 有无数据，统一刷新各按钮的可用状态。
+        参数控件同步锁定，避免扫描等运行中被改动。
         """
         state = self._state
+        self._update_param_lock()
         connected = self.scanner is not None
         have_data = connected and len(self.scanner.result) > 0
         idle = connected and state == "idle"
@@ -392,6 +415,9 @@ class ScanApp:
         self.btn_stop.config(state="normal" if state in ("scanning", "selftest") else "disabled")
         self.btn_save.config(state="normal" if (idle and have_data) else "disabled")
         self.btn_saveplot.config(state="normal" if (idle and have_data and HAVE_MPL) else "disabled")
+        # 保存/恢复配置会改动参数，运行中一并锁定
+        self.btn_savecfg.config(state="normal" if state == "idle" else "disabled")
+        self.btn_resetcfg.config(state="normal" if state == "idle" else "disabled")
         # 手动点动 + 自检 (仅空闲且已连接时可用)
         for b in self._jog_buttons:
             b.config(state="normal" if idle else "disabled")
