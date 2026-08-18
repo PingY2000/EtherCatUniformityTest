@@ -21,13 +21,12 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QGridLayout,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QComboBox, QFileDialog, QLabel, QMessageBox,
+    QVBoxLayout, QWidget,
 )
 
 from .config import AxisConfig, ScanConfig
+from .ui.main_window_ui import Ui_ScanAppQt
 from .motion import SimulatedAxis
 from .power_meter import Pm100usbPowerMeter, SimulatedPowerMeter
 from .scanner import Scanner, ScanResult
@@ -116,8 +115,7 @@ class ScanAppQt(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EtherCAT 双轴滑台扫描采集 (PySide6)")
-        self.resize(1100, 840)
+        # 窗口标题 / 尺寸来自 Designer 布局 (ui/main_window.ui)
         self.events = queue.Queue()
         self.master = None
         self.meter = None
@@ -147,10 +145,9 @@ class ScanAppQt(QWidget):
         self._jog_buttons = []
         self.btn_selftest = None
 
-        self._build_vars()
+        self._build_ui()   # 加载 Designer 布局 + 注入动态控件 (含 self.w)
         # 记录各控件出厂默认值，供"恢复默认设置"使用 (须在 _load_config 之前采集)
         self._defaults = self._collect_values()
-        self._build_ui()
         self._load_config()
         self._init_heatmap()
 
@@ -162,56 +159,6 @@ class ScanAppQt(QWidget):
         self._timer_pos.timeout.connect(self._refresh_pos)
         self._timer_pos.start(200)
 
-    # ---------------- 变量 ----------------
-    def _build_vars(self):
-        """创建各配置项对应的控件 (通过 _g/_s 读写，普通控件不是线程安全的)。"""
-        self.w = {}
-        w = self.w
-        w["ifname"] = QLineEdit("")
-        w["dry_run"] = QCheckBox("模拟运行 (dry-run)")
-        w["dry_run"].setChecked(True)
-        w["x_alias"] = QLineEdit("0")
-        w["y_alias"] = QLineEdit("1")
-        w["x_ppmm"] = QLineEdit("200")
-        w["y_ppmm"] = QLineEdit("200")
-        w["x_reverse"] = QCheckBox("X 反向")
-        w["y_reverse"] = QCheckBox("Y 反向")
-        w["x_home_method"] = QComboBox()
-        w["y_home_method"] = QComboBox()
-        for c in (w["x_home_method"], w["y_home_method"]):
-            c.addItems(["17", "18", "24", "29"])
-            c.setCurrentText("17")
-        w["x_min"] = QLineEdit("")
-        w["x_max"] = QLineEdit("")
-        w["y_min"] = QLineEdit("")
-        w["y_max"] = QLineEdit("")
-        w["x_start"] = QLineEdit("-10")
-        w["x_stop"] = QLineEdit("10")
-        w["x_step"] = QLineEdit("1")
-        w["y_start"] = QLineEdit("-10")
-        w["y_stop"] = QLineEdit("10")
-        w["y_step"] = QLineEdit("1")
-        w["dwell"] = QLineEdit("0.1")
-        w["samples"] = QLineEdit("1")
-        w["snake"] = QCheckBox("蛇形")
-        w["snake"].setChecked(True)
-        w["home"] = QCheckBox("扫描前回零")
-        w["show_pos_on_map"] = QCheckBox("热力图显示位置标记")
-        w["show_pos_on_map"].setChecked(True)
-        w["pm_use_real"] = QCheckBox("真实功率计 (PM100USB)")
-        w["pm_resource"] = QLineEdit("")
-        w["pm_wavelength"] = QLineEdit("")
-        w["jog_step"] = QLineEdit("1")
-
-        # 运行时状态显示 (不持久化)
-        self.lbl_status = QLabel("未连接")
-        self.lbl_pos_x = QLabel("X: 0.000 mm")
-        self.lbl_pos_y = QLabel("Y: 0.000 mm")
-        self.lbl_range_x = QLabel("未设置")
-        self.lbl_range_y = QLabel("未设置")
-        self.lbl_limits = QLabel("限位: —")
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
 
     def _g(self, key):
         """读一个配置项 (主线程内调用)。"""
@@ -306,181 +253,109 @@ class ScanAppQt(QWidget):
 
     # ---------------- UI ----------------
     def _build_ui(self):
-        root = self
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(4)
+        """加载 Designer 布局 (ui/main_window.ui) 并注入无法在 Designer 里编辑的动态控件。
 
-        # 1) 硬件连接 (左) + 功率计 (右)
-        row0 = QHBoxLayout()
-        layout.addLayout(row0)
+        - 所有静态控件 (self.w 配置项 / self.lbl_* / self.btn_* / self.progress /
+          self.log_text) 都来自 .ui，控件 objectName 与代码里的名字/字典 key 一致。
+        - matplotlib 画布 (FigureCanvasQTAgg) 和自定义标尺 (RulerWidget)
+          由这里注入到占位容器 (canvas_holder / ruler_x_holder / ruler_y_holder)。
+        - 用 Qt Designer 改布局: 打开 ui/main_window.ui，改完 pyside6-uic 重新编译即可，
+          无需动本方法 (除非新增了控件)。
+        """
+        self.ui = Ui_ScanAppQt()
+        self.ui.setupUi(self)
+        u = self.ui
 
-        fhw = QGroupBox("硬件连接")
-        g = QGridLayout(fhw)
-        g.addWidget(self.w["dry_run"], 0, 0, 1, 4)
-        g.addWidget(QLabel("网卡"), 1, 0)
-        g.addWidget(self.w["ifname"], 1, 1, 1, 3)
-        g.addWidget(QLabel("X 站号"), 2, 0)
-        g.addWidget(self.w["x_alias"], 2, 1)
-        g.addWidget(QLabel("Y 站号"), 2, 2)
-        g.addWidget(self.w["y_alias"], 2, 3)
-        g.addWidget(QLabel("X 脉冲/mm"), 3, 0)
-        g.addWidget(self.w["x_ppmm"], 3, 1)
-        g.addWidget(QLabel("Y 脉冲/mm"), 3, 2)
-        g.addWidget(self.w["y_ppmm"], 3, 3)
-        g.addWidget(self.w["x_reverse"], 4, 1)
-        g.addWidget(self.w["y_reverse"], 4, 3)
-        row0.addWidget(fhw, 1)
+        # 配置项控件: key 与 Designer 里的 objectName 一一对应。
+        # _g/_s 按控件类型分派: QCheckBox→isChecked, QComboBox→currentText, 其他→text。
+        self.w = {
+            "ifname": u.ifname, "dry_run": u.dry_run,
+            "x_alias": u.x_alias, "y_alias": u.y_alias,
+            "x_ppmm": u.x_ppmm, "y_ppmm": u.y_ppmm,
+            "x_reverse": u.x_reverse, "y_reverse": u.y_reverse,
+            "x_home_method": u.x_home_method, "y_home_method": u.y_home_method,
+            "x_min": u.x_min, "x_max": u.x_max, "y_min": u.y_min, "y_max": u.y_max,
+            "x_start": u.x_start, "x_stop": u.x_stop, "x_step": u.x_step,
+            "y_start": u.y_start, "y_stop": u.y_stop, "y_step": u.y_step,
+            "dwell": u.dwell, "samples": u.samples,
+            "snake": u.snake, "home": u.home, "show_pos_on_map": u.show_pos_on_map,
+            "pm_use_real": u.pm_use_real, "pm_resource": u.pm_resource,
+            "pm_wavelength": u.pm_wavelength, "jog_step": u.jog_step,
+        }
 
-        fpm = QGroupBox("功率计 (PM100USB + PD300R)")
-        g = QGridLayout(fpm)
-        g.addWidget(self.w["pm_use_real"], 0, 0, 1, 2)
-        g.addWidget(QLabel("资源名"), 1, 0)
-        g.addWidget(self.w["pm_resource"], 1, 1)
-        g.addWidget(QLabel("波长(nm)"), 2, 0)
-        g.addWidget(self.w["pm_wavelength"], 2, 1)
-        hint = QLabel("(资源名留空自动搜索；波长留空用探头当前校准)")
-        hint.setStyleSheet("color: gray;")
-        g.addWidget(hint, 3, 0, 1, 2)
-        row0.addWidget(fpm, 1)
+        # 运行时状态控件 (不持久化)
+        self.lbl_status = u.lbl_status
+        self.lbl_pos_x = u.lbl_pos_x
+        self.lbl_pos_y = u.lbl_pos_y
+        self.lbl_range_x = u.lbl_range_x
+        self.lbl_range_y = u.lbl_range_y
+        self.lbl_limits = u.lbl_limits
+        self.progress = u.progress
+        self.log_text = u.log_text
 
-        # 2) 回零与限位 (左) + 扫描参数 (右)
-        row1 = QHBoxLayout()
-        layout.addLayout(row1)
-
-        fhl = QGroupBox("回零与限位 (mm，相对原点)")
-        g = QGridLayout(fhl)
-        for r, name in enumerate(["X", "Y"]):
-            k = name.lower()
-            g.addWidget(QLabel(f"{name} 回零方式"), r, 0)
-            g.addWidget(self.w[f"{k}_home_method"], r, 1)
-            g.addWidget(QLabel(f"{name} 软限位"), r, 2)
-            g.addWidget(self.w[f"{k}_min"], r, 3)
-            g.addWidget(QLabel("~"), r, 4)
-            g.addWidget(self.w[f"{k}_max"], r, 5)
-        row1.addWidget(fhl, 1)
-
-        fsc = QGroupBox("扫描参数 (mm)")
-        g = QGridLayout(fsc)
-        for r, (key, lbl) in enumerate([("start", "起点"), ("stop", "终点"), ("step", "步长")]):
-            g.addWidget(QLabel(f"X {lbl}"), r, 0)
-            g.addWidget(self.w[f"x_{key}"], r, 1)
-            g.addWidget(QLabel(f"Y {lbl}"), r, 2)
-            g.addWidget(self.w[f"y_{key}"], r, 3)
-        g.addWidget(QLabel("停留(s)"), 0, 4)
-        g.addWidget(self.w["dwell"], 0, 5)
-        g.addWidget(QLabel("每点采样"), 1, 4)
-        g.addWidget(self.w["samples"], 1, 5)
-        g.addWidget(self.w["home"], 3, 0, 1, 2)
-        g.addWidget(self.w["snake"], 3, 2, 1, 2)
-        g.addWidget(self.w["show_pos_on_map"], 4, 0, 1, 4)
-        row1.addWidget(fsc, 1)
-
-        # 3) 控制按钮 (运动控制 左 / 数据 右)
-        fctl = QHBoxLayout()
-        layout.addLayout(fctl)
-        fmove = QHBoxLayout()
-        self.btn_connect = QPushButton("连接")
-        self.btn_home = QPushButton("回零")
-        self.btn_start = QPushButton("开始扫描")
-        self.btn_stop = QPushButton("停止")
-        self.btn_selftest = QPushButton("自检")
+        # 按钮 + 信号连接
+        self.btn_connect = u.btn_connect
+        self.btn_home = u.btn_home
+        self.btn_start = u.btn_start
+        self.btn_stop = u.btn_stop
+        self.btn_selftest = u.btn_selftest
+        self.btn_save = u.btn_save
+        self.btn_saveplot = u.btn_saveplot
+        self.btn_savecfg = u.btn_savecfg
+        self.btn_resetcfg = u.btn_resetcfg
         self.btn_connect.clicked.connect(self._on_connect)
         self.btn_home.clicked.connect(self._on_home)
         self.btn_start.clicked.connect(self._on_start)
         self.btn_stop.clicked.connect(self._on_stop)
         self.btn_selftest.clicked.connect(self._on_selftest)
-        for b in (self.btn_connect, self.btn_home, self.btn_start,
-                  self.btn_stop, self.btn_selftest):
-            fmove.addWidget(b)
-        fctl.addLayout(fmove)
-
-        fdata = QHBoxLayout()
-        self.btn_save = QPushButton("保存CSV")
-        self.btn_saveplot = QPushButton("保存热力图")
-        self.btn_savecfg = QPushButton("保存配置")
-        self.btn_resetcfg = QPushButton("恢复默认")
         self.btn_save.clicked.connect(self._on_save_csv)
         self.btn_saveplot.clicked.connect(self._on_save_plot)
         self.btn_savecfg.clicked.connect(self._on_save_config)
         self.btn_resetcfg.clicked.connect(self._on_reset_config)
-        for b in (self.btn_save, self.btn_saveplot, self.btn_savecfg, self.btn_resetcfg):
-            fdata.addWidget(b)
-        fctl.addStretch(1)
-        fctl.addLayout(fdata)
         self.btn_home.setEnabled(False)
         self.btn_start.setEnabled(False)
 
-        # 4) 进度
-        fprog = QHBoxLayout()
-        layout.addLayout(fprog)
-        fprog.addWidget(self.lbl_limits)
-        fprog.addSpacing(16)
-        fprog.addWidget(self.lbl_status)
-        fprog.addStretch(1)
-        fprog.addWidget(self.progress, 1)
+        # 点动按钮
+        self._jog_buttons = [u.btn_jog_xn, u.btn_jog_xp, u.btn_jog_yn, u.btn_jog_yp]
+        u.btn_jog_xn.clicked.connect(lambda: self._on_jog("X", -1))
+        u.btn_jog_xp.clicked.connect(lambda: self._on_jog("X", +1))
+        u.btn_jog_yn.clicked.connect(lambda: self._on_jog("Y", -1))
+        u.btn_jog_yp.clicked.connect(lambda: self._on_jog("Y", +1))
 
-        # 5) 实时位置与软限位 / 手动点动 (左，紧凑) + 热力图/日志 (右，占满) 同一行
-        bottom = QHBoxLayout()
-        layout.addLayout(bottom, 1)
-
-        fpos = QGroupBox("实时位置与软限位 / 手动点动")
-        fpos.setFixedWidth(220)
-        g = QGridLayout(fpos)
-        # X 轴: 名称 + 位置 + 点动按钮一行，软限位与标尺在其下方
-        g.addWidget(QLabel("X"), 0, 0)
-        g.addWidget(self.lbl_pos_x, 0, 1)
-        btn_xn = QPushButton("-")
-        btn_xp = QPushButton("+")
-        btn_xn.setFixedWidth(28)
-        btn_xp.setFixedWidth(28)
-        btn_xn.clicked.connect(lambda: self._on_jog("X", -1))
-        btn_xp.clicked.connect(lambda: self._on_jog("X", +1))
-        g.addWidget(btn_xn, 0, 2)
-        g.addWidget(btn_xp, 0, 3)
-        g.addWidget(self.lbl_range_x, 1, 1)
+        # 自定义标尺 (Designer 里只是占位容器)
         self._ruler_x = RulerWidget()
-        g.addWidget(self._ruler_x, 2, 0, 1, 4)
-        # Y 轴 (同 X)
-        g.addWidget(QLabel("Y"), 3, 0)
-        g.addWidget(self.lbl_pos_y, 3, 1)
-        btn_yn = QPushButton("-")
-        btn_yp = QPushButton("+")
-        btn_yn.setFixedWidth(28)
-        btn_yp.setFixedWidth(28)
-        btn_yn.clicked.connect(lambda: self._on_jog("Y", -1))
-        btn_yp.clicked.connect(lambda: self._on_jog("Y", +1))
-        g.addWidget(btn_yn, 3, 2)
-        g.addWidget(btn_yp, 3, 3)
-        g.addWidget(self.lbl_range_y, 4, 1)
+        self._fill_placeholder(u.ruler_x_holder, self._ruler_x)
         self._ruler_y = RulerWidget()
-        g.addWidget(self._ruler_y, 5, 0, 1, 4)
-        self._jog_buttons = [btn_xn, btn_xp, btn_yn, btn_yp]
-        # 点动步长
-        g.addWidget(QLabel("点动步长(mm)"), 6, 1)
-        self.w["jog_step"].setFixedWidth(56)
-        g.addWidget(self.w["jog_step"], 6, 2, 1, 2)
-        bottom.addWidget(fpos)
+        self._fill_placeholder(u.ruler_y_holder, self._ruler_y)
 
-        # 6) 热力图 + 日志
-        right = QSplitter(Qt.Horizontal)
+        # 热力图画布 (占位容器在 QSplitter 左侧)
         if HAVE_MPL:
             self._fig = Figure(figsize=(5, 4), dpi=100)
             self._ax = self._fig.add_subplot(111)
             self._canvas = FigureCanvasQTAgg(self._fig)
-            right.addWidget(self._canvas)
+            self._fill_placeholder(u.canvas_holder, self._canvas)
         else:
             lbl = QLabel("(未装 numpy/matplotlib，无热力图预览)")
             lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-            right.addWidget(lbl)
-        self.log_text = QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumBlockCount(5000)
-        right.addWidget(self.log_text)
-        right.setStretchFactor(0, 3)
-        right.setStretchFactor(1, 1)
-        right.setSizes([600, 260])
-        bottom.addWidget(right, 1)
+            self._fill_placeholder(u.canvas_holder, lbl)
+        u.right_split.setStretchFactor(0, 3)
+        u.right_split.setStretchFactor(1, 1)
+        u.right_split.setSizes([600, 260])
+
+        # 底部 (热力图+日志) 一行占满剩余高度
+        root = self.layout()
+        for i in range(root.count()):
+            if root.itemAt(i).layout() is u.bottom:
+                root.setStretch(i, 1)
+                break
+
+    @staticmethod
+    def _fill_placeholder(container: QWidget, child: QWidget) -> QWidget:
+        """把 child 塞进占位容器并铺满 (容器在 Designer 里只占个位置)。"""
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(child)
+        return child
 
     # ---------------- 日志 / 状态 ----------------
     def _log(self, msg: str):

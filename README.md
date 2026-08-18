@@ -24,7 +24,10 @@ SOEM/
 │   ├── power_meter.py       #   功率计接口 + 模拟/SCPI/串口
 │   ├── scanner.py           #   逐点停测扫描主循环
 │   ├── gui.py               #   Tkinter 图形界面 (零依赖)
-│   └── gui_pyside6.py       #   PySide6 图形界面 (需 pip install PySide6)
+│   ├── gui_pyside6.py       #   PySide6 图形界面 (需 pip install PySide6)
+│   └── ui/                  #   Qt Designer 布局文件
+│       ├── main_window.ui           #   界面布局 (Designer 可视化编辑)
+│       └── main_window_ui.py        #   pyside6-uic 自动生成，勿手改
 └── examples/
     ├── run_scan.py          # 命令行入口
     ├── run_gui.py           # Tkinter 图形界面入口
@@ -100,6 +103,28 @@ python examples/run_gui_pyside6.py
 - 面板填扫描范围/步长/停留时间，勾选「模拟运行」即可无硬件试跑
 - 「连接 → 回零/开始扫描 → 停止」，实时显示当前坐标、功率、进度条与热力图
 - 扫描在后台线程运行，界面不卡顿；完成后「保存CSV / 保存热力图」
+
+### 用 Qt Designer 改界面
+
+PySide6 版的静态布局都在 `ethercat_scan/ui/main_window.ui`，用 Qt Designer 可视化编辑：
+
+```bash
+pyside6-designer ethercat_scan/ui/main_window.ui
+# 改完保存，然后重新编译：
+pyside6-uic ethercat_scan/ui/main_window.ui -o ethercat_scan/ui/main_window_ui.py
+python examples/run_gui_pyside6.py   # 看效果
+```
+
+几点注意：
+
+- 控件的 **objectName 必须与代码里的名字一致**：配置项对应 `ScanAppQt.w` 字典的 key
+  （`x_start`、`dwell`、`snake`…），读写在 `_g`/`_s` 里按类型分派——
+  `QCheckBox`→勾选、`QComboBox`→下拉、其余→文本，所以数值框请用 `QLineEdit`，
+  不要用 `QSpinBox/QDoubleSpinBox`（后者没有 `text()`，会报错）。
+- 热力图画布（matplotlib）和左右标尺是代码动态生成的，Designer 里只是三个占位容器
+  `canvas_holder` / `ruler_x_holder` / `ruler_y_holder`，别删。
+- 运行时状态控件 `lbl_status`/`lbl_progress`/`btn_*` 等由代码绑定，改名字需同步改
+  [gui_pyside6.py](ethercat_scan/gui_pyside6.py)。
 
 ## 关键参数标定
 
