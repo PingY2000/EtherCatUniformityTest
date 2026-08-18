@@ -23,10 +23,12 @@ SOEM/
 │   ├── master.py            #   EtherCAT 主站封装 (pysoem)
 │   ├── power_meter.py       #   功率计接口 + 模拟/SCPI/串口
 │   ├── scanner.py           #   逐点停测扫描主循环
-│   └── gui.py               #   Tkinter 图形界面
+│   ├── gui.py               #   Tkinter 图形界面 (零依赖)
+│   └── gui_pyside6.py       #   PySide6 图形界面 (需 pip install PySide6)
 └── examples/
     ├── run_scan.py          # 命令行入口
-    └── run_gui.py           # 图形界面入口
+    ├── run_gui.py           # Tkinter 图形界面入口
+    └── run_gui_pyside6.py   # PySide6 图形界面入口
 ```
 
 ## 安装
@@ -70,11 +72,24 @@ python examples/run_scan.py \
 
 ## 图形界面
 
+提供两套桌面界面，功能一致，二选一：
+
+### Tkinter 版 (默认，零额外依赖)
+
 ```bash
 python examples/run_gui.py
 ```
 
-Tkinter 桌面界面，零额外依赖（热力图预览需 numpy+matplotlib，缺失时自动降级为纯日志）：
+### PySide6 版 (Qt，需先安装)
+
+```bash
+pip install PySide6
+python examples/run_gui_pyside6.py
+```
+
+两套界面共用同一份配置文件 `~/.ethercat_scan_config.json`，设置互通。
+
+界面功能（热力图预览需 numpy+matplotlib，缺失时自动降级为纯日志）：
 
 - 面板填扫描范围/步长/停留时间，勾选「模拟运行」即可无硬件试跑
 - 「连接 → 回零/开始扫描 → 停止」，实时显示当前坐标、功率、进度条与热力图
