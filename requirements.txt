@@ -4,7 +4,10 @@ pysoem>=1.4.0
 
 # 可选: PySide6 图形界面 (gui_pyside6.py / run_gui_pyside6.py)
 # 默认用 Tkinter 版 (零依赖)；需要更现代的 Qt 界面时再装
-# PySide6>=6.5
+# 注意: 请用 6.8.x。6.9+ 的 Qt6Core.dll 依赖 icuuc.dll (未带版本号导出名),
+#       而系统/Anaconda 自带的 ICU 导出的是带版本号符号 (ucnv_open_78),
+#       会导致 "DLL load failed: 找不到指定的程序" 无法启动。
+# PySide6==6.8.*
 
 # 可选: 仅保存热力图 (save_heatmap) 时需要
 # numpy

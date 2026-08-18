@@ -598,7 +598,6 @@ class ScanAppQt(QWidget):
     # ---------------- 构建 scanner ----------------
     def _collect_params(self):
         """在主线程读取所有界面参数为普通 dict (Qt 控件只能在主线程访问)。"""
-        v = self.w
         return {
             "dry_run": self._g("dry_run"),
             "ifname": self._g("ifname").strip(),
@@ -1036,7 +1035,7 @@ class ScanAppQt(QWidget):
             self._log(payload)
         elif kind == "point":
             i, x, y, p, total = payload
-            self.progress.setValue((i + 1) / total * 100 if total else 0)
+            self.progress.setValue(int((i + 1) / total * 100) if total else 0)
             self.lbl_status.setText(f"点 {i + 1}/{total}  ({x:.3f},{y:.3f})  {p:.6f} W")
             self._set_pos(x, y)
             self._target_pos = (x, y)
@@ -1082,11 +1081,11 @@ class ScanAppQt(QWidget):
 
 def main():
     """命令行入口 (等价于 python examples/run_gui_pyside6.py)。"""
-    app = QApplication([])
+    import sys
+    app = QApplication(sys.argv)
     win = ScanAppQt()
     win.show()
-    sys.exit_code = app.exec()
-    return sys.exit_code
+    return app.exec()
 
 
 if __name__ == "__main__":

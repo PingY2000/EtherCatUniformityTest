@@ -83,9 +83,15 @@ python examples/run_gui.py
 ### PySide6 版 (Qt，需先安装)
 
 ```bash
-pip install PySide6
+pip install "PySide6==6.8.*"   # 见下方版本说明
 python examples/run_gui_pyside6.py
 ```
+
+> **为什么固定 6.8.x**：PySide6 6.9+ 的 `Qt6Core.dll` 会依赖 `icuuc.dll`，而它要求
+> **不带版本号** 的导出符号 (`ucnv_open`)；Windows 自带的系统 ICU 和 Anaconda 带的
+> ICU (75/78 等) 导出的都是带版本号的符号 (`ucnv_open_78`)，二者对不上，启动时会报
+> `ImportError: DLL load failed while importing QtCore: 找不到指定的程序`。
+> 6.8.x 的 QtCore 不依赖 ICU，可直接运行。
 
 两套界面共用同一份配置文件 `~/.ethercat_scan_config.json`，设置互通。
 
