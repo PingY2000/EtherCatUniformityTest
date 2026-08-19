@@ -560,6 +560,8 @@ class Ui_ScanAppQt(object):
         self.x_home_method.setItemText(3, QCoreApplication.translate("ScanAppQt", u"29", None))
 
         self.label_x_min.setText(QCoreApplication.translate("ScanAppQt", u"X \u8f6f\u9650\u4f4d", None))
+        self.x_min.setText(QCoreApplication.translate("ScanAppQt", u"-15", None))
+        self.x_max.setText(QCoreApplication.translate("ScanAppQt", u"15", None))
         self.label_x_min_tilde.setText(QCoreApplication.translate("ScanAppQt", u"~", None))
         self.label_y_home_method.setText(QCoreApplication.translate("ScanAppQt", u"Y \u56de\u96f6\u65b9\u5f0f", None))
         self.y_home_method.setItemText(0, QCoreApplication.translate("ScanAppQt", u"17", None))
@@ -568,6 +570,8 @@ class Ui_ScanAppQt(object):
         self.y_home_method.setItemText(3, QCoreApplication.translate("ScanAppQt", u"29", None))
 
         self.label_y_min.setText(QCoreApplication.translate("ScanAppQt", u"Y \u8f6f\u9650\u4f4d", None))
+        self.y_min.setText(QCoreApplication.translate("ScanAppQt", u"-15", None))
+        self.y_max.setText(QCoreApplication.translate("ScanAppQt", u"15", None))
         self.label_y_min_tilde.setText(QCoreApplication.translate("ScanAppQt", u"~", None))
         self.scan_group.setTitle(QCoreApplication.translate("ScanAppQt", u"\u626b\u63cf\u53c2\u6570 (mm)", None))
         self.label_x_start.setText(QCoreApplication.translate("ScanAppQt", u"X \u8d77\u70b9", None))
