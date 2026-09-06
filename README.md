@@ -29,7 +29,8 @@ SOEM/
 │       ├── main_window.ui           #   界面布局 (Designer 可视化编辑)
 │       └── main_window_ui.py        #   pyside6-uic 自动生成，勿手改
 └── examples/
-    ├── run_scan.py          # 命令行入口
+    ├── run_scan.py          # 命令行入口 (扫描采集)
+    ├── run_verify.py        # 命令行入口 (装机分步验证: 通信→滑台→限位原点)
     ├── run_gui.py           # Tkinter 图形界面入口
     └── run_gui_pyside6.py   # PySide6 图形界面入口
 ```
@@ -184,6 +185,35 @@ python examples/run_scan.py \
   --x-min 0 --x-max 100 --y-min 0 --y-max 100 \
   --x-range 5 95 1 --y-range 5 95 1
 ```
+
+## 装机分步验证
+
+装机/接线完成后，可用 `examples/run_verify.py` 按 **控制器通信 → 滑台控制 → 限位和原点**
+三步逐步验证，每步输出 PASS/FAIL 汇总，方便定位问题、留调试记录。当前支持**单轴**
+(默认 X，结构留好可扩双轴)。
+
+```bash
+# 三步全跑 (真实硬件, 需 pysoem + Npcap)
+python examples/run_verify.py --ifname "\\Device\\NPF_{GUID}" --alias 0
+
+# 只跑某一步
+python examples/run_verify.py --ifname "\\Device\\NPF_{GUID}" --alias 0 --only 1   # 仅通信
+python examples/run_verify.py --ifname "\\Device\\NPF_{GUID}" --alias 0 --only 2   # 仅滑台点动
+python examples/run_verify.py --ifname "\\Device\\NPF_{GUID}" --alias 0 --only 3   # 仅限位/原点自检
+
+# 无硬件跑通脚本流程 (第1/3步 NA，仅验证逻辑)
+python examples/run_verify.py --dry-run
+```
+
+| 步骤 | 内容 | 备注 |
+|---|---|---|
+| 1 控制器通信 | 发现从站 → 识别 YKD 驱动器 → 进入运行态 → SDO 读 + 6081h 读写回环 | 网卡/线缆/站号拨码问题会在这里暴露 |
+| 2 滑台控制 | 使能 (CiA402) + PP 低速 → 点动 `--jog-mm` 前进再回程 → 读实际位置核对 | 需轴在自由行程中段；压住限位会拒绝动作 |
+| 3 限位和原点 | 读 60FDh 开关状态 → 自检(负限位→正限位→回零) | 复用自检逻辑，报限位触发位置供设软限位 |
+
+常用参数：`--alias` 站号、`--ppmm` 脉冲/mm、`--home-method` 回零方式(17/18/24/29)、
+`--jog-mm` 点动距离、`--slow-vel` 低速(默认 2000 pulses/s)、`--max-mm` 自检搜索行程上限。
+跑第 3 步前请确认轴不在限位/原点开关上，且 `--max-mm` 小于等于实际行程。
 
 ## 说明与注意
 
