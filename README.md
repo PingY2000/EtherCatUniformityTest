@@ -29,8 +29,9 @@ SOEM/
 │       ├── main_window.ui           #   界面布局 (Designer 可视化编辑)
 │       └── main_window_ui.py        #   pyside6-uic 自动生成，勿手改
 └── examples/
+    ├── bringup/             # 首次上电分步验证链 00~07 (见 bringup/README.md)
     ├── run_scan.py          # 命令行入口 (扫描采集)
-    ├── run_verify.py        # 命令行入口 (装机分步验证: 通信→滑台→限位原点)
+    ├── run_verify.py        # 命令行入口 (一键复验: 通信→滑台→限位原点)
     ├── run_gui.py           # Tkinter 图形界面入口
     └── run_gui_pyside6.py   # PySide6 图形界面入口
 ```
@@ -188,7 +189,11 @@ python examples/run_scan.py \
 
 ## 装机分步验证
 
-装机/接线完成后，可用 `examples/run_verify.py` 按 **控制器通信 → 滑台控制 → 限位和原点**
+> **第一次接入驱动器 + 滑台**：请先走安全导入链 [examples/bringup](examples/bringup/README.md)
+> （00~07：上电前检查 → 总线枚举 → 参数核对 → 状态机 → 低速点动 → 限位确认 → 回零 → 软限位建议），
+> 每步有前置闸门和人工确认。下面的一键脚本用于装好之后的**快速复验**。
+
+装机/接线确认后，可用 `examples/run_verify.py` 按 **控制器通信 → 滑台控制 → 限位和原点**
 三步逐步验证，每步输出 PASS/FAIL 汇总，方便定位问题、留调试记录。当前支持**单轴**
 (默认 X，结构留好可扩双轴)。
 
